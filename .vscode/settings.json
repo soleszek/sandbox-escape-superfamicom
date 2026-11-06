@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "wsl": true,
+        "&": true,
+        "Set-Content": true,
+        "Start-Process": true
+    }
+}
