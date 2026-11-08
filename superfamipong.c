@@ -284,7 +284,7 @@ const u8 icon_col[4] = {4, 18, 4, 18};
 const u8 icon_row[4] = {11, 11, 17, 17};
 const char *pwr_name[PWR_ALL + 1] = {"SUPER SHOT", "CURVE", "ZIGZAG", "GHOST", "GROW", "SPLIT", "FORTRESS",
                                  "TWIN", "SWAP", "SLOW", "CATCH", "BLINK STRIKE", "CAMO", "CHAOS", "HELL"};
-const char *pwr_desc[PWR_ALL + 1] = {"DOUBLE SPEED + COMET TAIL ", "BALL FLIES IN AN ARC      ",
+const char *pwr_desc[PWR_ALL + 1] = {"4X SPEED + COMET TAIL     ", "BALL FLIES IN AN ARC      ",
                            "BALL ZIGZAGS UP AND DOWN  ", "BALL VANISHES MIDCOURT    ",
                            "PADDLE GROWS TO 80 PX     ", "BALL SPLITS INTO TWO      ",
                            "3-GAP WALL BEHIND YOU     ", "MIRROR TWIN PADDLE        ",
@@ -1375,6 +1375,14 @@ void vblank_tasks(void)
     // Nastepna klatka ogrow: jeden transfer 8 calych wierszy (17-24), zaraz po kolorach i tylko
     // z zapasem czasu VBlank. Poza VBlank konsola ignoruje zapisy - 8 osobnych transferow konczylo
     // sie w linii 9 nastepnej klatki i zostawaly postacie sklejone z dwoch klatek animacji.
+    // Wiersz 3 mapy BG1 (paski mocy i ikony mocy) zaraz po kolorach: to tylko 64 bajty. Na koncu
+    // listy (po burzy, deszczu, CAMO) na konsoli czesto brakowalo juz czasu VBlank i pasek na
+    // ekranie potrafil stac nawet kilkanascie sekund, choc gra liczyla go poprawnie.
+    if (hud_dirty && vb_ok())
+    {
+        dmaCopyVram((u8 *)(bgmap + 96), VRAM_BG1_MAP + 96, 64);
+        hud_dirty = 0;
+    }
     if (arena == 1 && crowd_dirty && vb_ok())
     {
         dmaCopyVram((u8 *)crowd_rows[crowd_frame], VRAM_BG1_MAP + 17 * 32, 512);
@@ -1498,11 +1506,6 @@ void vblank_tasks(void)
         REG_CGADSUB = cm_adsub;
         REG_COLDATA = cm_data;
         cm_dirty = 0;
-    }
-    if (hud_dirty && (REG_VBLANK & 0x80))   // wiersz 3 mapy BG1: ikony mocy i paski
-    {
-        dmaCopyVram((u8 *)(bgmap + 96), VRAM_BG1_MAP + 96, 64);
-        hud_dirty = 0;
     }
 }
 
@@ -5266,7 +5269,11 @@ void update_story_select(void)
 void story_result(u8 win)
 {
     u8 len, x;
-    run_score += (s16)score1 * (1 + difficulty) - (s16)score2;   // wynik: zdobyte x mnoznik poziomu - stracone
+    s16 lost;
+    lost = (s16)score2;
+    if (stage == G_LUCIFERO)   // punkty przeniesione z walki z Kimantero zostaly juz raz odjete
+        lost -= (s16)luc_carry;
+    run_score += (s16)score1 * (1 + difficulty) - lost;   // wynik: zdobyte x mnoznik poziomu - stracone
     music_stop_safe();   // koniec walki: cisza przed fanfara (przez kolejke dzwieku)
     state = ST_RESULT;
     result_win = win;
