@@ -2035,6 +2035,18 @@ const u8 face_vis[51] = {1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 0, 1
 u8 face_state, face_row, face_k, face_ts, face_pal_ok;
 u16 face_timer;
 u8 face_oam[3][144], face_hid[144];
+// Twarz pojawia sie tylko w ciemnosci mocy HELL (gaszenie swiatla), raz na uzycie mocy, w losowym
+// z pierwszych trzech zgaszen. luc_face_dark: 0 = nie, 1 = to zgaszenie ma twarz, 2 = twarz trwa.
+u8 luc_face_dark, luc_dark_n, luc_face_pick;
+// Wzor migania twarzy (face_vis, 51 krokow) jest odtwarzany w FACE_DUR klatkach obrazu, liczonych
+// z licznika VBlank - niezaleznie od tego, jak wolno liczy gra przy wszystkich efektach.
+#define FACE_DUR 54
+u16 face_t0;
+// Zgaszenie z twarza ma trwac ok. 1,25 s niezaleznie od tempa gry: po twarzy swiatlo wraca
+// w stalych 16 klatkach obrazu (zwykle zgaszenia bez zmian).
+#define FACE_RAMP 16
+u8 luc_face_blk, luc_ramp_on;
+u16 luc_ramp_t0;
 extern char luc_face_til, luc_face_pal;
 void luc_face_prep(void);
 // rozszerzenie boiska (dzialanie mocy 2): kamera C0 -> C1 w 16 krokach, podloga z rozszerzona strona
@@ -2190,7 +2202,11 @@ void luc_setup(void)   // przy wylaczonym ekranie (wczytywanie sceny)
     luc_hell_kind = 0;
     luc_hell_p = 1;
     face_ts = 0x02;
-    face_timer = 600 + rand() % 600;   // pierwsza twarz po 10-20 s gry
+    face_timer = 0;   // (twarz nie pojawia sie juz losowo w walce)
+    luc_face_dark = 0;
+    luc_face_blk = 0;
+    luc_ramp_on = 0;
+    luc_dark_n = 0;
     {
         u16 *g = (u16 *)&luc_floor_pal;   // rdzawe kolory podlogi: wiecej czerwieni, mniej zieleni i blekitu
         u16 c, r, gg, bb;
@@ -2369,33 +2385,46 @@ void luc_face_stop(void)   // twarz znika; czcionka napisow wraca do kafelkow sp
     face_ts = 0x02;
     face_state = 3;
     face_row = 0;
+    luc_face_dark = 0;
+}
+void luc_hide_for_face(void)   // twarz w ciemnosci: wszystkie inne sprite'y (pilka, paletki, popiol) poza ekranem
+{
+    u16 i;
+    for (i = 0; i < 80; i++)
+        oamMemory[(i << 2) + 1] = 240;
+    for (i = 116; i < 128; i++)
+        oamMemory[(i << 2) + 1] = 240;
 }
 void luc_face_update(void)   // co klatke, po popiele (twarz nadpisuje czesc jego sprite'ow)
 {
     u8 j;
     if (face_state == 0)
     {
-        if (state == ST_PLAY && !luc_txt_n && --face_timer == 0)
+        if (luc_face_dark == 1 && luc_dark_t > 8 && state == ST_PLAY && !luc_txt_n)   // tylko w ciemnosci wybranego zgaszenia
         {
             face_state = 1;   // wgrywanie palety i kafelkow (po VBlank)
             face_row = 0;
             face_pal_ok = 0;
+            luc_face_dark = 2;
         }
     }
     else if (face_state == 1)
     {
-        if (luc_txt_n)
+        if (luc_txt_n || state != ST_PLAY)
             luc_face_stop();
         else if (face_row >= 12 && face_pal_ok)
         {
             face_state = 2;
             face_k = 0;
+            face_t0 = snes_vblank_count;
+            memcpy(oamMemory + FACE_SPR, face_hid, 144);   // miejsca twarzy od razu puste (bez iskier popiolu)
             luc_face_size(1);
-            face_ts = 0x01;   // przezroczystosc miesza twarz z podloga
+            face_ts = 0x00;   // w ciemnosci: bez mieszania z podloga
         }
     }
     else if (face_state == 2)
     {
+        face_k = (u8)(((u16)(snes_vblank_count - face_t0) * 51) / FACE_DUR);   // krok wzoru wg uplywu czasu
         if (luc_txt_n || state != ST_PLAY || face_k >= 51)
             luc_face_stop();
         else
@@ -2407,7 +2436,6 @@ void luc_face_update(void)   // co klatke, po popiele (twarz nadpisuje czesc jeg
             }
             else
                 memcpy(oamMemory + FACE_SPR, face_hid, 144);
-            face_k++;
         }
     }
 }
@@ -2436,8 +2464,17 @@ void luc_face_vblank(void)   // po VBlank: kafelki twarzy, paleta, czcionka, prz
         if (face_row >= 6)
         {
             face_state = 0;
-            face_timer = 1200 + rand() % 900;   // nastepna twarz za 20-35 s gry
         }
+    }
+    if (face_state == 2 && luc_face_dark)   // twarz w ciemnosci: tylko sprite'y (bez podlogi i HUD)
+    {
+        luc_h_tm[1] = 0x10;
+        luc_h_tm[3] = 0x10;
+    }
+    else
+    {
+        luc_h_tm[1] = 0x13;
+        luc_h_tm[3] = 0x11;
     }
     *(vuint8 *)0x212D = face_ts;
 }
@@ -2546,6 +2583,11 @@ void luc_hell_end(void)
     ash_up = 0;
     luc_ember_dirty = 1;
     luc_dark_t = 0;
+    if (face_state == 1 || face_state == 2)   // koniec mocy przerywa twarz
+        luc_face_stop();
+    luc_face_dark = 0;
+    luc_face_blk = 0;
+    luc_ramp_on = 0;
     if (luc_hell_kind == 0)
         pad_target[v] = pad_base[v];
     if (luc_hell_kind == 2)   // kamera wraca, boisko sie zweza (zwykla podloga: luc_cam_update)
@@ -2578,11 +2620,15 @@ void luc_hell_begin(u8 p)
         }
     }
     luc_dark_wait = 30;
+    luc_dark_n = 0;
+    luc_face_pick = 1 + rand() % 3;   // twarz w 1., 2. albo 3. zgaszeniu (w 13 s sa zawsze co najmniej 4)
+    luc_face_dark = 0;
     if (luc_mus_luc && music_on && !snd_dead)
         mus_pos = 5;   // czesc przemiany (pozycja 4; wysle sound_tick)
 }
 void luc_hell_update(void)   // co klatke (przed VBlank)
 {
+    u16 el;
     if (luc_rust != luc_rust_want && (ash_f & 1))
     {
         luc_rust += (luc_rust < luc_rust_want) ? 1 : -1;
@@ -2591,14 +2637,48 @@ void luc_hell_update(void)   // co klatke (przed VBlank)
     if (!luc_hell_t || state != ST_PLAY)
     {
         luc_dark_t = 0;   // punkt albo koniec mocy: swiatlo od razu wraca
+        luc_face_blk = 0;
+        luc_ramp_on = 0;
         return;
     }
     if (luc_hell_kind == 1)
     {
         if (luc_dark_t)
-            luc_dark_t--;
+        {
+            if (luc_face_dark == 2 && (face_state == 1 || face_state == 2))
+            {
+                luc_face_blk = 1;   // twarz trwa: ciemnosc czeka (zgaszenie prowadzi twarz)
+                if (luc_dark_t < 9)
+                    luc_dark_t = 9;
+            }
+            else if (luc_face_blk)   // twarz sie skonczyla: swiatlo wraca w stalym czasie
+            {
+                luc_face_blk = 0;
+                luc_ramp_on = 1;
+                luc_ramp_t0 = snes_vblank_count;
+                luc_dark_t = 8;
+            }
+            else if (luc_ramp_on)
+            {
+                el = snes_vblank_count - luc_ramp_t0;
+                if (el >= FACE_RAMP)
+                {
+                    luc_dark_t = 0;
+                    luc_ramp_on = 0;
+                }
+                else
+                    luc_dark_t = 8 - (u8)(el >> 1);   // te same stopnie jasnosci co zwykle (8..1)
+            }
+            else
+                luc_dark_t--;
+            if (!luc_dark_t)
+                luc_face_dark = 0;   // twarz, ktora nie zdazyla sie pokazac (np. napis), przepada
+        }
         else if (--luc_dark_wait == 0)
         {
+            luc_dark_n++;
+            if (luc_dark_n == luc_face_pick)
+                luc_face_dark = 1;               // w tym zgaszeniu pojawi sie twarz
             luc_dark_t = 45 + (rand() & 15);     // 0,75-1 s ciemnosci (ostatnie 8 klatek: swiatlo wraca)
             luc_dark_wait = 60 + (rand() & 63);
             play_sound(SND_THUNDER);             // trzask
@@ -2631,7 +2711,9 @@ void luc_hell_vblank(void)   // po VBlank: kolory podlogi, iskry/popiol, jasnosc
         }
         luc_ember_dirty = 0;
     }
-    if (luc_dark_t > 8)        // ciemnosc: calkowita czern (na CRT jasnosc 1 byla za jasna)
+    if (luc_face_dark && face_state == 2)   // twarz w ciemnosci: wszystko inne ukryte, wiec widac tylko ja
+        b = 0x0F;
+    else if (luc_dark_t > 8)        // ciemnosc: calkowita czern (na CRT jasnosc 1 byla za jasna)
         b = 0x00;
     else if (luc_dark_t)       // swiatlo wraca stopniowo: 1, 3, ... 15 (luc_dark_t 8..1)
         b = 1 + ((8 - luc_dark_t) << 1);
@@ -2676,6 +2758,8 @@ void luc_wait_vb(void)
         luc_pf[1] = cg_cur[CGI_P2];
         luc_pcol_prep(1, luc_pf[1]);
     }
+    if (luc_face_dark && face_state == 2)
+        luc_hide_for_face();
     (WaitForVBlank)();      // w VBlank biblioteka wysyla przeliczone sprite'y
     if (luc_pc_pend && vb_ok())   // kolory paletek: pierwsze po VBlank, gotowe (bez obliczen)
         luc_pcol_send();
