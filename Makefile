@@ -17,7 +17,7 @@ export ROMSIZE       := 0A    # 1 MB (plansza Lucifero); od banku 8 lezy muzyka
 export ROMBANKS      := 32
 
 # Muzyka: moduly .it -> bank dzwiekow (smconv), od banku ROM 8
-AUDIOFILES := music/ruden.it music/malten.it music/waller.it music/doppler.it music/changero.it \
+AUDIOFILES := music/stormfx.it music/ruden.it music/malten.it music/waller.it music/doppler.it music/changero.it \
               music/chronos.it music/magneton.it music/telementor.it music/blinker.it music/kimantero.it music/tango.it music/lucifero.it
 export SOUNDBANK := soundbank
 

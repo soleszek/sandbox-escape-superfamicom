@@ -205,6 +205,7 @@ enum { SP_NONE, SP_SUPER, SP_CURVE, SP_ZIGZAG, SP_GHOST };   // SP_x = PWR_x + 1
 #define TILE_BALL     2
 #define TILE_TAIL     3   // 3..7
 #define TILE_CORNER   8
+#define TILE_SPARK    9   // iskra Kimantero: kwadracik 3x3 (dawny wyglad kulki 3 px ogona)
 
 // Dzwieki: numer = indeks w tablicy sounds[] (patrz init_sound)
 #define SND_TADA     0
@@ -511,6 +512,9 @@ u16 ghost_t[2];
 u8 char_of[2];
 u8 tele0_done, tele0_cool, tele0_flash;   // Telementor po lewej stronie (gracz)
 // Burza (ostatnia walka; w trybach 1/2 PLAYER, gdy Kimantero gra po lewej)
+// Grzmot burzy (walka z Kimantero): efekt z banku dzwiekow (modul 0, tools/make_storm_fx.py), wgrywany
+// razem z muzyka Kimantero i grany przez spcEffect na wlasnym glosie - odbicia pilki go nie ucinaja.
+u8 storm_fx, storm_fx_ok;   // grzmot czeka na wyslanie / efekt jest wgrany
 u8 storm_on, bolt_t, bolt_row, bolt_col, bolt_dirty, thunder_t, bright_max, cm_norm_adsub;
 u16 rain_x, rain_y, storm_t, storm_flash;
 u16 bolt_save[16], bolt_new[16];
@@ -782,6 +786,12 @@ void sound_tick(void)
         snd_gap = 3;
         play_wait = 90;
         return;
+    }
+    if (storm_fx && spc_fread == spc_fwrite)   // grzmot burzy: efekt z banku, wlasny glos
+    {
+        spcEffect(3, 0, 15 * 16 + 8);   // 12 kHz, glosnosc 15, srodek
+        storm_fx = 0;
+        return;   // jedno polecenie na klatke: zwykly efekt pojdzie w nastepnej
     }
     if (snd_req == SND_NONE)
         return;
@@ -1623,6 +1633,12 @@ void spc_music_load(u8 mod)
     digi_remain = 0;
     *(vuint8 *)0x420D = 0;   // (wolny odczyt na czas przesylania - patrz spc_slow_process)
     spcLoad(mod);   // (obszar na efekty jest zarezerwowany raz, przy starcie - przed modulami)
+    storm_fx_ok = 0;
+    if (mod == MOD_KIMANTERO)
+    {
+        spcLoadEffect(0);   // grzmot burzy (modul MOD_STORMFX, efekt 0)
+        storm_fx_ok = 1;
+    }
     *(vuint8 *)0x420D = 1;
     spcSetModuleVolume(MUSIC_VOL);
     spc_mus = 1;
@@ -1754,7 +1770,7 @@ u8 *luc_pimg(u8 side, u8 b, u8 v)   // obraz pasa b toru side w wariancie v (128
         base = (b < 5) ? (u8 *)&luc_pad1_a : (u8 *)&luc_pad1_b;
     else
         base = (b < 5) ? (u8 *)&luc_pad0_a : (u8 *)&luc_pad0_b;
-    return base + ((u16)(b % 5) * 31 + v) * 128;
+    return base + ((u16)(b % 5) * 49 + v) * 128;   // 49 wariantow pasa (zaokraglone konce)
 }
 u16 luc_slot_tile(u8 k)   // tablica nazw 1 sprite'ow: 0-19 pelne pasy, 20-27 przyciete konce paletek
 {
@@ -1877,7 +1893,7 @@ void draw_sprites(void)
         for (k = 0; k < 6; k++)
         {
             if (spk_life[k])
-                SPR(SPR_SPARK + k * 4, spr_x(spk_x[k]), spk_y[k], TILE_TAIL + 3, SPR_ATTR(4, 0, 0))
+                SPR(SPR_SPARK + k * 4, spr_x(spk_x[k]), spk_y[k], TILE_SPARK, SPR_ATTR(4, 0, 0))
             else
                 HIDE(SPR_SPARK + k * 4)
         }
@@ -2814,6 +2830,7 @@ void reset_effects(void)
     bolt_t = 0;
     bolt_dirty = 0;
     thunder_t = 0;
+    storm_fx = 0;
     storm_flash = 0;
     storm_bri = 0;
     bright_max = 15;
@@ -3363,6 +3380,26 @@ const u16 tele_spal[10] = {RGB8(70, 70, 100), RGB8(130, 130, 170), RGB8(190, 190
                            RGB8(180, 240, 250), RGB8(255, 220, 80), RGB8(255, 90, 120), RGB8(150, 190, 120),
                            RGB8(90, 130, 80), RGB8(120, 200, 160)};
 const u16 tele_lt[4] = {RGB8(255, 220, 80), RGB8(255, 90, 120), RGB8(255, 90, 120), RGB8(255, 220, 80)};
+// Snop UFO (kolory 8 i 9 palety 3) pulsuje: +-15% jasnosci, pelny cykl 1 s (30 krokow co 2 klatki).
+// Pary (kolor 8, kolor 9) = kolor * (1 + 0,15 * sin(2 pi k / 30)), policzone wczesniej (bez mnozen w grze).
+const u16 tele_pulse[60] = {
+    RGB8(150, 190, 120), RGB8(90, 130, 80), RGB8(155, 196, 124), RGB8(93, 134, 82),
+    RGB8(159, 202, 127), RGB8(95, 138, 85), RGB8(163, 207, 131), RGB8(98, 141, 87),
+    RGB8(167, 211, 133), RGB8(100, 144, 89), RGB8(169, 215, 136), RGB8(102, 147, 90),
+    RGB8(171, 217, 137), RGB8(103, 149, 91), RGB8(172, 218, 138), RGB8(103, 149, 92),
+    RGB8(172, 218, 138), RGB8(103, 149, 92), RGB8(171, 217, 137), RGB8(103, 149, 91),
+    RGB8(169, 215, 136), RGB8(102, 147, 90), RGB8(167, 211, 133), RGB8(100, 144, 89),
+    RGB8(163, 207, 131), RGB8(98, 141, 87), RGB8(159, 202, 127), RGB8(95, 138, 85),
+    RGB8(155, 196, 124), RGB8(93, 134, 82), RGB8(150, 190, 120), RGB8(90, 130, 80),
+    RGB8(145, 184, 116), RGB8(87, 126, 78), RGB8(141, 178, 113), RGB8(85, 122, 75),
+    RGB8(137, 173, 109), RGB8(82, 119, 73), RGB8(133, 169, 107), RGB8(80, 116, 71),
+    RGB8(131, 165, 104), RGB8(78, 113, 70), RGB8(129, 163, 103), RGB8(77, 111, 69),
+    RGB8(128, 162, 102), RGB8(77, 111, 68), RGB8(128, 162, 102), RGB8(77, 111, 68),
+    RGB8(129, 163, 103), RGB8(77, 111, 69), RGB8(131, 165, 104), RGB8(78, 113, 70),
+    RGB8(133, 169, 107), RGB8(80, 116, 71), RGB8(137, 173, 109), RGB8(82, 119, 73),
+    RGB8(141, 178, 113), RGB8(85, 122, 75), RGB8(145, 184, 116), RGB8(87, 126, 78)};
+u16 tele_cbuf[4];   // kolory 6-9 palety 3 (dwa swiatla UFO + dwa kolory snopu), wysylane razem w VBlank
+u8 tele_pk;
 const u16 tele_bgc[7] = {RGB8(40, 30, 74), RGB8(14, 12, 30), 0, 0, RGB8(60, 64, 110), 0, RGB8(220, 225, 255)};
 const s8 ufo_bob[8] = {0, 1, 2, 1, 0, -1, -2, -1};
 
@@ -3861,7 +3898,7 @@ void tele_beam(u8 on)   // sprite'y 100-108; ar_o2: wpisy dla miejsca postoju i 
 
 void upd_tele(void)
 {
-    u8 on, ch, k;
+    u8 on, ch, k, cs;
     if (--ar_t1 == 0)
     {
         ar_t1 = 10;
@@ -3904,13 +3941,27 @@ void upd_tele(void)
         }
         return;
     }
+    cs = 0;
     if ((frame & 7) == 0)   // swiatla UFO na zmiane
     {
-        ar_cg2 = (u8 *)tele_lt;
-        if (frame & 8)
-            ar_cg2 += 4;
+        k = (frame & 8) ? 2 : 0;
+        tele_cbuf[0] = tele_lt[k];
+        tele_cbuf[1] = tele_lt[k + 1];
+        cs = 1;
+    }
+    if (ar_st == 2 && !(frame & 1))   // snop pulsuje
+    {
+        if (++tele_pk >= 30)
+            tele_pk = 0;
+        tele_cbuf[2] = tele_pulse[tele_pk << 1];
+        tele_cbuf[3] = tele_pulse[(tele_pk << 1) + 1];
+        cs = 1;
+    }
+    if (cs)   // swiatla i snop jednym wpisem (wysylka w VBlank: vblank_arena2)
+    {
+        ar_cg2 = (u8 *)tele_cbuf;
         ar_ci2 = SPR_PAL3 + 6;
-        ar_cn2 = 4;
+        ar_cn2 = 8;
     }
     if (ar_st == 2)
     {
@@ -3920,6 +3971,8 @@ void upd_tele(void)
             on = (ar_t2 >> 1) & 1;
         if (ar_t2 < 8)     // ...i tak samo gasnie
             on = ar_t2 & 1;
+        if (on && (frame & 1))   // snop pokazuje sie co druga klatke: na kineskopie wyglada na polprzezroczysty
+            on = 0;
         if (ar_t2 == 0)
         {
             on = 0;
@@ -4124,6 +4177,9 @@ void arena2_setup(void)
         dmaCopyCGram(&telementor_cols, 29, 6);
         dmaCopyCGram((u8 *)tele_bgc, 21, 14);
         dmaCopyCGram((u8 *)tele_spal, SPR_PAL3 + 1, 20);
+        for (i = 0; i < 4; i++)   // bufor kolorow 6-9 palety 3: swiatla UFO i snop
+            tele_cbuf[i] = tele_spal[5 + i];
+        tele_pk = 0;
         oamMemory[512 + 24] = 0x0A;   // UFO (96, 97) i wiazka (100-108): sprite'y 16x16
         oamMemory[512 + 25] = 0xAA;
         oamMemory[512 + 26] = 0xAA;
@@ -4547,7 +4603,12 @@ void update_storm(void)
     if (thunder_t)
     {
         if (--thunder_t == 0)
-            play_sound(SND_THUNDER);
+        {
+            if (storm_fx_ok && spc_mus == 2)
+                storm_fx = 1;               // glosniejszy grzmot burzy na wlasnym glosie (wysyla sound_tick)
+            else
+                play_sound(SND_THUNDER);    // bez muzyki: dawny grzmot (jak u Lucifero)
+        }
     }
     if (bolt_t)   // trwa blyskawica: dwa rozblyski, potem piorun gasnie
     {
@@ -4602,6 +4663,7 @@ void storm_idle(u8 move)
         storm_bri = bright_max;
     }
     thunder_t = 0;
+    storm_fx = 0;
 }
 
 void setup_match(void)
@@ -6706,6 +6768,8 @@ void lose_point(u8 p);
 // Strata punktu przez gracza p: kasujemy jego pasek i uzbrojenie
 void lose_point(u8 p)
 {
+    if (luc_hell_t)   // moc Lucifero konczy sie przy kazdym punkcie (bez wzgledu na to, kto go zdobyl)
+        luc_hell_end();
     bar[p] = 0;
     armed[p] = 0;
     grow_timer[p] = 0;               // GROW konczy sie, gdy wlasciciel straci punkt
@@ -7408,12 +7472,13 @@ void paddle_hit(u8 p, s16 by, s16 py)
         if (p1_y + pad_h[0] / 2 > (FIELD_TOP + FIELD_BOTTOM) / 2)
             vel_y = -vel_y;   // w strone dalsza od paletki gracza
     }
-    if (ff_mode && ff_level >= 11)   // FAST & FURIOUS: od 11. poziomu iskry takze przy paletce
+    if ((ff_mode && ff_level >= 11) || any_g(9))   // FAST & FURIOUS od 11. poziomu i walka z Kimantero: iskry przy paletce
         spawn_sparks((s16)(ball_x >> 8), (s16)(ball_y >> 8), rand() & 1);
     end_special();   // kontakt z paletka konczy kazde uderzenie specjalne
     new_cpu_error();
 
-    force_tail = 0;
+    if (!any_g(9))
+        force_tail = 0;   // (w walce z Kimantero kometa zostaje do konca wymiany - zeruje ja punkt)
     if (is_g(p, 9) || ff_mode)
         force_tail = 1;   // po odbiciu Kimantero (i w FAST & FURIOUS) pilka zawsze ma ogon komety
     if (blink_side == p && blink_ret == 0)
@@ -7638,10 +7703,11 @@ void update_ball(void)
     }
     bx = (s16)(ball_x >> 8);
 
-    // Punkty: za linia paletki albo po przewinieciu pozycji przez krawedz ekranu
-    if (vel_x < 0 && (bx < 8 || wrap_l))
+    // Punkty: za linia paletki albo po przewinieciu pozycji przez krawedz ekranu. Na planszy Lucifero
+    // posadzke widac za paletkami, wiec pilka leci az do jej krawedzi (x 0 i 256).
+    if (vel_x < 0 && (bx < (luc_on ? 1 : 8) || wrap_l))
         lose_point(0);   // punkt: obie pilki znikaja, serwis ze srodka
-    else if (vel_x > 0 && (bx > 240 || wrap_r))
+    else if (vel_x > 0 && (bx > (luc_on ? 247 : 240) || wrap_r))
         lose_point(1);
 }
 
@@ -7817,9 +7883,9 @@ void update_xball(u8 k)
         wl = 0;
     }
     bx = (s16)(xb_x[k] >> 8);
-    if (xb_vx[k] < 0 && (bx < 8 || wl))
+    if (xb_vx[k] < 0 && (bx < (luc_on ? 1 : 8) || wl))   // (plansza Lucifero: do krawedzi posadzki)
         lose_point(0);
-    else if (xb_vx[k] > 0 && (bx > 240 || wr))
+    else if (xb_vx[k] > 0 && (bx > (luc_on ? 247 : 240) || wr))
         lose_point(1);
 }
 

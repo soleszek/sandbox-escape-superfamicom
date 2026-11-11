@@ -61,7 +61,7 @@ for s in range(3):
             x = max(3, min(12, x))
         pts.append((int(x), y))
     for (px, py) in pts:
-        for dx in (-1, 1):
+        for dx in (-1,):   # poswiata tylko z jednej strony: piorun 2 px (byl 3 px)
             if 0 <= px + dx < W: img[py][px + dx] = max(img[py][px + dx], 3)
         img[py][px] = 4
     # krotkie odgalezienie

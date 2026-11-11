@@ -183,33 +183,36 @@ def make_robot():
 # Paleta z pliku to paletka gracza 1 (bordo); paleta gracza 2 jest w pong.c.
 def make_sprites():
     """Sprite'y 8x8: 0 = gora paletki, 1 = srodek paletki, 2 = pilka,
-    3..7 = kropki ogona komety (6, 5, 4, 3, 2 px; kolory 1..5 palety sprite'ow nr 4),
-    8 = rog ramki kursora (gorny lewy; reszta przez odbicia).
+    3..7 = kropki ogona komety (kola 6, 5, 4, 3, 2 px; kolory 1..5 palety sprite'ow nr 4),
+    8 = rog ramki kursora (gorny lewy; reszta przez odbicia), 9 = iskra Kimantero (3x3).
     Kolory w palecie z PNG (gracz 1): 1 = wypelnienie, 2 = jasna krawedz, 3 = bialy."""
-    cv = Canvas(72, 8)
+    cv = Canvas(80, 8)
+    def disc(x0, d, c):   # kolo o srednicy d px w kafelku 8x8 (nieparzyste: pol piksela w lewo i w gore)
+        o = (8 - d) // 2; r = d / 2
+        for y in range(d):
+            for x in range(d):
+                dx = x + 0.5 - r; dy = y + 0.5 - r
+                if dx * dx + dy * dy <= r * r + 0.01 and not (d == 3 and dx and dy):   # 3 px: krzyzyk
+                    cv.put(x0 + o + x, o + y, c)
     for y in range(8):
         for x in range(8):
             edge = x in (0, 7)
             cv.put(x, y, 2 if (edge or y == 0) else 1)       # gora paletki
             cv.put(8 + x, y, 2 if edge else 1)              # srodek paletki
-            corner = (x in (0, 7)) and (y in (0, 7))
-            cv.put(16 + x, y, 0 if corner else 3)          # pilka
+    disc(16, 8, 3)                                       # pilka: kolo 8 px
     for x in (0, 7):  # zaokraglone rogi gory paletki
         cv.put(x, 0, 0)
-    for k, size in enumerate((6, 5, 4, 3, 2)):          # ogon komety
-        x0 = 24 + 8 * k + (8 - size) // 2
-        y0 = (8 - size) // 2
-        for y in range(size):
-            for x in range(size):
-                if size >= 4 and (x in (0, size - 1)) and (y in (0, size - 1)):
-                    continue
-                cv.put(x0 + x, y0 + y, k + 1)
+    for k, size in enumerate((6, 5, 4, 3, 2)):          # ogon komety: kola 6, 5, 4, 3, 2 px
+        disc(24 + 8 * k, size, k + 1)
     for i in range(8):                                   # rog ramki: litera L, 2 px
         for t in range(2):
             cv.put(64 + i, t, 2)
             cv.put(64 + t, i, 2)
+    for y in range(3):                                   # kafelek 9: iskra Kimantero (kwadracik 3x3, kolor 4)
+        for x in range(3):
+            cv.put(72 + 2 + x, 2 + y, 4)
     pal = [(0, 0, 0), (150, 20, 50), (225, 100, 125), (255, 255, 255)] + [(0, 0, 0)] * 12
-    save_indexed(cv.px, 72, 8, pal, 'sprites.png')
+    save_indexed(cv.px, 80, 8, pal, 'sprites.png')
 
 
 # ---------------------------------------------------------------------------

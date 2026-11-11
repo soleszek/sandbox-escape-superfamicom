@@ -1505,6 +1505,29 @@ luc_pad_asm:
 	beq	@full
 	bcs	@part
 @full:
+	lda.w	lp_b			; koniec paletki rowno z granica pasa: wariant z zaokraglonym koncem
+	cmp.w	lp_bt
+	bne	@fb
+	lda	#31			; gorny koniec rowno z poczatkiem pasa (v = 31)...
+	sta.w	lp_v
+	lda.w	lp_b
+	cmp.w	lp_bb
+	bne	@fv0
+	lda	#48			; ...i dolny rowno z jego koncem (oba konce: v = 48)
+	sta.w	lp_v
+@fv0:
+	stz.w	lp_slot
+	jmp	@pv
+@fb:
+	lda.w	lp_b
+	cmp.w	lp_bb
+	bne	@fsh
+	lda	#32			; dolny koniec rowno z koncem pasa (v = 32)
+	sta.w	lp_v
+	lda	#1
+	sta.w	lp_slot
+	jmp	@pv
+@fsh:
 	lda.w	lp_side			; k = side * 10 + b
 	beq	@f0
 	lda	#10
@@ -1524,9 +1547,10 @@ luc_pad_asm:
 	clc
 	adc	#16
 	cmp.w	lp_lb
-	beq	@top
+	beq	@both			; dolny koniec rowno z koncem pasa: tez oba konce w tym pasie
 	bcc	@top
-	lda.w	lp_lt			; tak: wariant dolny o dlugosci lb - lt, sprite nizej o lt - rs
+@both:
+	lda.w	lp_lt			; tak: wariant z oboma koncami o dlugosci lb - lt, sprite nizej o lt - rs
 	sec
 	sbc.w	lp_rs
 	sta.w	lp_sh
@@ -1534,7 +1558,7 @@ luc_pad_asm:
 	sec
 	sbc.w	lp_lt
 	clc
-	adc	#15
+	adc	#32
 	sta.w	lp_v
 	stz.w	lp_slot
 	bra	@pv
@@ -1549,8 +1573,14 @@ luc_pad_asm:
 	lda.w	lp_b
 	cmp.w	lp_bt
 	bne	@s1
-	stz.w	lp_slot			; (pierwszy pas zaczynajacy sie rowno z paletka)
-	bra	@sv
+	stz.w	lp_slot			; pierwszy pas zaczyna sie rowno z paletka i ona w nim konczy:
+	lda.w	lp_lb			; oba konce, v = 32 + (lb - rs)
+	sec
+	sbc.w	lp_rs
+	clc
+	adc	#32
+	sta.w	lp_v
+	bra	@pv
 @s1:
 	lda	#1
 	sta.w	lp_slot
@@ -1575,8 +1605,7 @@ luc_pad_asm:
 	and	#$00FF
 	xba
 	lsr	a
-	lsr	a
-	lsr	a			; b * 32
+	lsr	a			; b * 64 (warianty 0-48)
 	sta.w	lp_code
 	lda.w	lp_v
 	and	#$00FF
@@ -1873,7 +1902,7 @@ luc_src:
 	and	#$00FF
 	asl	a
 	tax
-	lda.l	luc_boff,x		; + (b % 5) * 31 * 128
+	lda.l	luc_boff,x		; + (b % 5) * 49 * 128
 	clc
 	adc.w	lp_src
 	sta.w	lp_src
@@ -1957,8 +1986,8 @@ luc_pbase:				; indeks: pset * 4 + strona * 2 + czesc
 .dw luc_pad0_a, luc_pad0_b, luc_pad1_a, luc_pad1_b, luc_wpad0_a, luc_wpad0_b, luc_wpad1_a, luc_wpad1_b
 luc_pbank:
 .db :luc_pad0_a, :luc_pad0_b, :luc_pad1_a, :luc_pad1_b, :luc_wpad0_a, :luc_wpad0_b, :luc_wpad1_a, :luc_wpad1_b
-luc_boff:				; (b % 5) * 31 wariantow * 128 B
-.dw 0, 3968, 7936, 11904, 15872
+luc_boff:				; (b % 5) * 49 wariantow * 128 B
+.dw 0, 6272, 12544, 18816, 25088
 luc_sva:				; slowo VRAM pasu k: $5000 + 16 * luc_tiles[k] (0-19 pelne, 20-27 konce)
 .dw $5600, $5620, $5640, $5660, $5680, $56A0, $56C0, $56E0
 .dw $5800, $5820, $5840, $5860, $5880, $58A0, $58C0, $58E0

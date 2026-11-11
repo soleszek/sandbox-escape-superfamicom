@@ -472,10 +472,7 @@ def telementor():
         half = 6 + (22 - 6) * y / 47
         for x in range(48):
             if abs(x + 0.5 - 24) > half: continue
-            if y < 30:
-                on = (x + y) % 2 == 0
-            else:
-                on = (x % 2 == 0) and (y % 2 == 0)
+            on = True   # snop pelny (dawniej kratka); polprzezroczystosc daje miganie co druga klatke w grze
             edge = abs(x + 0.5 - 24) > half - 2
             if on: beam[y, x] = 9 if (edge or y >= 30) else 8
     sheet[16:64, 0:48] = beam
