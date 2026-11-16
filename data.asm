@@ -275,6 +275,10 @@ xm_step		DW
 xm_i		DW
 xm_sb		DW
 xm_st		DW
+xm_neg		DW	; 1 = pilka za lewa krawedzia: x 248-255 w historii oznacza x - 256
+xm_h		DW	; 9. bit x obliczony przez _xb_pos9
+xm_v		DW	; (robocza dla _xb_pos9)
+xm_m		DW	; (robocza dla _xb_xhi)
 .ENDS
 .ifdef FASTROM
 .BASE $80
@@ -400,6 +404,11 @@ xb_draw_asm:
 	sta.l	xm_sb
 	lda	13,s
 	sta.l	xm_st
+	lda	9,s		; pilka k za lewa krawedzia? (xb_offl)
+	tax
+	lda.l	xb_offl,x
+	and	#$00FF
+	sta.l	xm_neg
 	lda	9,s		; --- pilka ---
 	tax
 	lda.l	xb_on,x
@@ -410,7 +419,7 @@ xb_draw_asm:
 	lda.l	xb_x,x
 	xba
 	and	#$00FF
-	jsr	_xb_clampx
+	jsr	_xb_pos9
 	sta.l	xm_t
 	lda.l	xb_y,x
 	and	#$FF00
@@ -420,6 +429,8 @@ xb_draw_asm:
 	tax
 	pla
 	sta.l	oamMemory,x
+	lda.l	xm_h		; 9. bit x (pilka czesciowo za lewa krawedzia)
+	jsr	_xb_xhi
 	lda	#$3002		; kafelek TILE_BALL, atrybuty SPR_ATTR(0,0,0)
 	sta.l	oamMemory+2,x
 	txa
@@ -447,8 +458,11 @@ xb_draw_asm:
 	lda.l	xtail,x
 	and	#$00FF
 	cmp.l	xm_i
-	beq	@thide
-	bcc	@thide
+	beq	@thj
+	bcs	@tvis
+@thj:
+	jmp	@thide		; (skok daleki: segment schowany)
+@tvis:
 	lda.l	xm_i		; h = (hist_pos - 1 - step * (i + 1)) & 15
 	inc	a
 	sta.l	xm_t
@@ -470,7 +484,7 @@ xb_draw_asm:
 	tax
 	lda.l	xh_x,x
 	and	#$00FF
-	jsr	_xb_clampx
+	jsr	_xb_pos9
 	sta.l	xm_t
 	lda.l	xh_y,x
 	xba
@@ -485,6 +499,8 @@ xb_draw_asm:
 	tax
 	pla
 	sta.l	oamMemory,x
+	lda.l	xm_h		; 9. bit x
+	jsr	_xb_xhi
 	lda.l	xm_i
 	clc
 	adc	#$3803		; kafelek TILE_TAIL + i, atrybuty SPR_ATTR(4,0,0)
@@ -529,6 +545,9 @@ tail_draw_asm:
 	rep	#$30
 .ACCU 16
 .INDEX 16
+	lda.l	ball_offl		; pilka za lewa krawedzia? (x 248-255 w historii = x - 256)
+	and	#$00FF
+	sta.l	xm_neg
 	lda	#0
 	sta.l	xm_i
 @tl:
@@ -553,7 +572,7 @@ tail_draw_asm:
 	tax
 	lda.l	hist_x,x
 	and	#$00FF
-	jsr	_xb_clampx
+	jsr	_xb_pos9
 	sta.l	xm_t
 	lda.l	hist_y,x
 	xba
@@ -568,6 +587,8 @@ tail_draw_asm:
 	tax
 	pla
 	sta.l	oamMemory,x
+	lda.l	xm_h			; 9. bit x
+	jsr	_xb_xhi
 	lda.l	xm_i
 	clc
 	adc	#$3803			; kafelek TILE_TAIL + i, atrybuty SPR_ATTR(4,0,0)
@@ -604,17 +625,70 @@ tail_draw_asm:
 	rtl
 
 ; A = x (0..255): dodaje przesuniecie trzesienia ekranu i przycina do 0..255
-_xb_clampx:
+; A = x w pikselach (0-255) z pozycji lub historii pilki. Gdy xm_neg = 1 (pilka za lewa krawedzia),
+; x 248-255 oznacza x - 256. Dodaje drgania ekranu. Wynik: A = mlodszy bajt x, xm_h = 9. bit x
+; (x < 0: sprite czesciowo za lewa krawedzia; x > 255: poza ekranem). A i X 16-bit.
+_xb_pos9:
+	sta.l	xm_v
+	cmp	#248
+	bcc	@d
+	lda.l	xm_neg
+	beq	@d0
+	lda.l	xm_v
+	sec
+	sbc	#256
+	bra	@dx
+@d0:
+	lda.l	xm_v
+	bra	@dx
+@d:
+	lda.l	xm_v
+@dx:
 	clc
 	adc.l	spr_dx
-	bpl	@pos
-	lda	#0
+	sta.l	xm_v
+	xba
+	and	#$0001
+	sta.l	xm_h
+	lda.l	xm_v
+	and	#$00FF
 	rts
-@pos:
-	cmp	#256
-	bcc	@ok
-	lda	#255
-@ok:
+
+; A = 9. bit x (0 albo 1), X = offset sprite'a w OAM (n * 4): ustawia albo zeruje ten bit
+; w tablicy wysokiej OAM (bajt 512 + n / 4, bit (n & 3) * 2). Zachowuje X. A i X 16-bit.
+_xb_xhi:
+	phx
+	pha
+	txa
+	lsr	a
+	lsr	a
+	and	#$0003
+	tax
+	lda.l	luc_xm,x
+	and	#$00FF
+	sta.l	xm_m
+	lda	3,s			; offset sprite'a
+	lsr	a
+	lsr	a
+	lsr	a
+	lsr	a
+	tax
+	pla
+	sep	#$20
+.ACCU 8
+	beq	@clr
+	lda.l	oamMemory+512,x
+	ora.l	xm_m
+	bra	@st
+@clr:
+	lda.l	xm_m
+	eor	#$FF
+	and.l	oamMemory+512,x
+@st:
+	sta.l	oamMemory+512,x
+	rep	#$20
+.ACCU 16
+	plx
 	rts
 
 ; A = numer sprite'a w OAM: ukrywa go, jesli jest widoczny
@@ -1212,8 +1286,13 @@ luc_prj_rng:
 	lda.w	oamMemory+512,x
 	and.w	luc_hm
 	beq	@ok
+	lda.w	oamMemory,y		; 9. bit x: tylko pilka lub ogon czesciowo za lewa krawedzia (x -1..-127)
+	cmp	#129
+	bcs	@ok9
 	plx
 	bra	@next
+@ok9:
+	jmp	@neg9
 @ok:
 	ldx.w	luc_nb			; zapamietanie: offset, x, y, kafelek, atrybuty
 	rep	#$20
@@ -1269,6 +1348,63 @@ luc_prj_rng:
 	sta.w	oamMemory,y
 	plx
 	jmp	@next
+; x ujemne (9. bit): x' = 128 - (128 - x) * s / 256; 128 - x = 129..255 miesci sie w bajcie.
+; Zapamietany offset ma ustawiony bit 15 - luc_unproject przywraca wtedy 9. bit x.
+@neg9:
+	ldx.w	luc_nb
+	rep	#$20
+.ACCU 16
+	tya
+	ora	#$8000
+	sta.w	luc_bak,x
+	lda.w	oamMemory,y
+	sta.w	luc_bak+2,x
+	lda.w	oamMemory+2,y
+	sta.w	luc_bak+4,x
+	txa
+	clc
+	adc	#6
+	sta.w	luc_nb
+	lda	#0
+	sep	#$20
+.ACCU 8
+	lda.w	oamMemory+1,y
+	tax
+	lda.l	luc_pyr,x		; y'
+	sta.w	oamMemory+1,y
+	tax
+	lda	#128
+	sec
+	sbc.w	oamMemory,y		; 128 - x (mlodszy bajt: 384 - bajt)
+	sta.l	$004202
+	lda.l	luc_psr,x
+	sta.l	$004203
+	nop
+	nop
+	nop
+	nop
+	lda	#128
+	sec
+	sbc.l	$004217
+	sta.w	oamMemory,y
+	bcs	@p9			; x' >= 0: 9. bit wylaczony
+	plx
+	jmp	@next			; x' < 0: 9. bit zostaje
+@p9:
+	rep	#$20
+.ACCU 16
+	lda.w	luc_hb
+	and	#$00FF
+	tax
+	lda	#0
+	sep	#$20
+.ACCU 8
+	lda.w	luc_hm
+	eor	#$FF
+	and.w	oamMemory+512,x
+	sta.w	oamMemory+512,x
+	plx
+	jmp	@next
 
 luc_unproject:
 	php
@@ -1290,10 +1426,38 @@ luc_unproject:
 	bcs	@done
 	rep	#$20
 .ACCU 16
-	lda.w	luc_bak,x		; offset sprite'a (0-316)
+	lda.w	luc_bak,x		; offset sprite'a (0-316); bit 15: przywrocic 9. bit x
+	bpl	@n9
+	and	#$7FFF
+	tay
+	phx
+	lsr	a
+	lsr	a
+	pha				; numer sprite'a n
+	and	#$0003
+	tax
+	sep	#$20
+.ACCU 8
+	lda.l	luc_xm,x
+	sta.w	luc_hm			; (maska; luc_hm jest tu wolna - luc_project juz skonczyl)
+	rep	#$20
+.ACCU 16
+	pla
+	lsr	a
+	lsr	a
+	tax				; bajt n / 4 tablicy wysokiej
+	sep	#$20
+.ACCU 8
+	lda.w	oamMemory+512,x
+	ora.w	luc_hm
+	sta.w	oamMemory+512,x
+	plx
+	bra	@r
+@n9:
 	tay
 	sep	#$20
 .ACCU 8
+@r:
 	lda.w	luc_bak+2,x
 	sta.w	oamMemory,y
 	lda.w	luc_bak+3,x

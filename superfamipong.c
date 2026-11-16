@@ -389,6 +389,9 @@ u8 sel_idx[2], sel_done[2], cpu_think, cpu_delay, ready_timer, desc_dirty;
 
 // historia pozycji pilki (ogon komety i opozniona reakcja komputera)
 u8 hist_x[16], hist_y[16], hist_pos;
+// Pilka za lewa krawedzia ekranu: pozycja (8.8) przewija sie przy x = 0, wiec po przewinieciu
+// wartosci 248-255 oznaczaja x - 256 (-8..-1). Punkt dopiero, gdy cala pilka jest za krawedzia.
+u8 ball_offl;
 // Dodatkowe pilki (SPLIT): do 3, czyli razem z glowna do 4 na boisku
 #define XB 3
 u8 xh_x[XB][16], xh_y[XB][16], xtail[XB];   // historia pozycji (ogon) i dlugosc ogona
@@ -398,6 +401,7 @@ s16 xb_vx[XB], xb_vy[XB];
 const u16 xb_spr[XB] = {SPR_BALL2, SPR_BALL3, SPR_BALL4};
 const u16 xt_spr[XB] = {SPR_TAIL2, SPR_TAIL3, SPR_TAIL4};
 s16 pull_step;
+u8 xb_offl[XB];          // dodatkowa pilka za lewa krawedzia (jak ball_offl)
 u8 xb_cs[XB];            // dodatkowa pilka spowolniona przez Chronosa
 s16 xb_csv[XB];          // ...i jej predkosc sprzed spowolnienia
 u16 xb_pull[XB];         // przyciaganie Magnetona tej pilki
@@ -1729,9 +1733,33 @@ u8 spr_x(s16 x)   // pozycja z przesunieciem trzesienia ekranu, bez wyjscia poza
     return x;
 }
 
+// 9. bit pozycji x sprite'a (id = offset w OAM): x < 0 (pilka czesciowo za lewa krawedzia) lub x > 255
+void spr_xhi(u16 id, s16 x)
+{
+    u8 m = 1 << ((id >> 1) & 6);
+    if (x < 0 || x > 255)
+        oamMemory[512 + (id >> 4)] |= m;
+    else
+        oamMemory[512 + (id >> 4)] &= ~m;
+}
+
+// 9. bit x wszystkich pilek i ogonow wyzerowany (ustawiany tylko, gdy pilka jest za lewa krawedzia)
+void ball_xhi_clear(void)
+{
+    oamMemory[512] &= ~0x05;        // sprite'y 0 i 1: pilka i druga pilka
+    oamMemory[512 + 5] &= ~0x40;    // 23: ogon
+    oamMemory[512 + 6] &= ~0x55;    // 24-27: ogon
+    oamMemory[512 + 15] &= ~0x40;   // 63: ogon drugiej pilki
+    oamMemory[512 + 16] &= ~0x55;   // 64-67
+    oamMemory[512 + 17] &= ~0x55;   // 68-71: trzecia i czwarta pilka, ogon trzeciej
+    oamMemory[512 + 18] &= ~0x55;   // 72-75
+    oamMemory[512 + 19] &= ~0x55;   // 76-79
+}
+
 void hide_sprites(void)
 {
     u8 i;
+    ball_xhi_clear();
     for (i = 0; i < SPR_COUNT; i++)
     {
         oamMemory[i * 4 + 1] = 240;
@@ -1873,11 +1901,15 @@ void draw_xball(u8 k)
 void draw_sprites(void)
 {
     u8 k, h, vis;
-    s16 v = vel_x < 0 ? -vel_x : vel_x, ey;
+    s16 v = vel_x < 0 ? -vel_x : vel_x, ey, bxs;
 
     vis = !ghost_hidden && (!ghost_blink || (frame & 1));
     if (vis)
-        SPR(SPR_BALL, spr_x(ball_x >> 8), ball_y >> 8, TILE_BALL, SPR_ATTR((sp_type || kim_level >= 6 || ff_level >= 6) ? 2 : 0, 0, 0))
+    {
+        bxs = (s16)(ball_x >> 8) - (ball_offl ? 256 : 0) + spr_dx;   // za lewa krawedzia: x ujemne
+        SPR(SPR_BALL, (u8)bxs, ball_y >> 8, TILE_BALL, SPR_ATTR((sp_type || kim_level >= 6 || ff_level >= 6) ? 2 : 0, 0, 0))
+        spr_xhi(SPR_BALL, bxs);
+    }
     else
         HIDE(SPR_BALL)
     if (tele0_flash && (frame & 1))
@@ -3211,9 +3243,9 @@ void show_select(u8 players2)
             sel_done[i] = 1;
         }
     }
-    if (!two_players && char_of[1] == CH_SFC && sel_done[0])
+    if (!two_players && char_of[1] < CH_G0 && sel_done[0])
     {
-        cpu_think = 12;   // gracz ma moc z gory: AI Agent wybiera od razu
+        cpu_think = 12;   // gracz ma moc z gory: komputer (AI Agent, JOYBOT albo Muggy) wybiera od razu
         cpu_delay = think_delay[0];
     }
     draw_descs();
@@ -3229,6 +3261,7 @@ void go_serve(void)
     chron_slowed = 0;
     timer = 60;   // 1 s pauzy przed serwisem (NTSC)
     ball_x = FP(128 - BALL_SIZE / 2);
+    ball_offl = 0;
     ball_y = FP((FIELD_TOP + FIELD_BOTTOM) / 2 - BALL_SIZE / 2);
     vel_x = 0;
     vel_y = 0;
@@ -6217,7 +6250,10 @@ void update_select(void)
         else if (cpu_think && --cpu_delay == 0)
         {
             // "namysl": kursor skacze losowo, coraz wolniej
-            n = rand() & 3;   // AI Agent: jedna z 4 podstawowych mocy
+            // AI Agent: jedna z 4 podstawowych mocy. Biblioteczne rand() po srand z malej liczby (numer
+            // klatki) daje powtarzalny wzor - ostatni krok trafial zawsze na moc 0 (SUPER SHOT). Wynik
+            // laczymy z numerem klatki, ktory zalezy od chwili, gdy gracz nacisnal przycisk.
+            n = (rand() ^ snes_vblank_count) & 3;
             cpu_think--;
             if (cpu_think)
             {
@@ -6408,6 +6444,7 @@ void spawn_xball(u8 src)
         memcpy(xh_y[f], hist_y, 16);
         xtail[f] = tail_len;
         xb_x[f] = ball_x;
+        xb_offl[f] = ball_offl;
         xb_y[f] = ball_y;
         xb_vx[f] = vel_x * SPLIT_SLOW / 10;
         xb_vy[f] = vel_y + SPLIT_VY;
@@ -6419,6 +6456,7 @@ void spawn_xball(u8 src)
         memcpy(xh_y[f], xh_y[src], 16);
         xtail[f] = xtail[src];
         xb_x[f] = xb_x[src];
+        xb_offl[f] = xb_offl[src];
         xb_y[f] = xb_y[src];
         xb_vx[f] = xb_vx[src] * SPLIT_SLOW / 10;
         xb_vy[f] = xb_vy[src] + SPLIT_VY;
@@ -6732,6 +6770,8 @@ void point_scored(void)
 {
     u8 w, len, x;
     char *nm;
+    ball_offl = 0;   // (serwis ze srodka albo koniec meczu - pilka i tak znika)
+    ball_xhi_clear();
     draw_score();
     if (score1 < win_score && score2 < win_score)
     {
@@ -7422,7 +7462,7 @@ void paddle_hit(u8 p, s16 by, s16 py)
         else
             spd += spd / 20;
     }
-    else
+    else if (char_of[p] != CH_MUGGY || ff_mode)   // Muggy nie zmienia predkosci pilki (FAST & FURIOUS: jak dotad)
         spd += spd_step;
     if (ff_mode)   // FAST & FURIOUS: kazde odbicie +5%, bez limitu poziomow
     {
@@ -7451,8 +7491,8 @@ void paddle_hit(u8 p, s16 by, s16 py)
         if (is_g(p, 9) && kim_level >= 8)
             shake_t = 6;   // od 8. poziomu jego uderzenia trzesa ekranem
     }
-    else if (spd > max_spd && !strong)   // (odbicia tych strażnikow nie sa przycinane - zawsze przyspieszaja)
-        spd = max_spd;
+    else if (spd > max_spd && !strong && char_of[p] != CH_MUGGY)   // (odbicia tych strażnikow nie sa przycinane - zawsze
+        spd = max_spd;                                             //  przyspieszaja; Muggy oddaje pilke z jej predkoscia)
     if (spd > FF_MAX)   // techniczny limit 32 px na klatke
         spd = FF_MAX;
     if (blink_side == p && blink_ret == 0 && p == 1)
@@ -7500,7 +7540,7 @@ void wall_bounce(void)
 {
     u8 k;
     if (any_g(9) || ff_mode)   // Kimantero i FAST & FURIOUS: odbicia od band sypia iskrami
-        spawn_sparks((s16)(ball_x >> 8), (s16)(ball_y >> 8), vel_y > 0);
+        spawn_sparks((s16)(ball_x >> 8) - (ball_offl ? 256 : 0), (s16)(ball_y >> 8), vel_y > 0);
     vel_y = -vel_y;
     curve_acc = -curve_acc;   // luk odbija sie razem z pilka
     if (!sfx_lock)
@@ -7509,7 +7549,7 @@ void wall_bounce(void)
 
 void update_ball(void)
 {
-    s16 bx, by, pbx;
+    s16 bx, by, pbx, pex, ex;
     u16 old_x = ball_x;
     u8 wrap_l, wrap_r, comet;
     s16 pby = (s16)(ball_y >> 8), ty, d;
@@ -7602,19 +7642,22 @@ void update_ball(void)
         pull_total = 0;
 
     pbx = (s16)(ball_x >> 8);
+    pex = pbx - (ball_offl ? 256 : 0);   // poprzednia pozycja; za lewa krawedzia ujemna
     special_tick();
     ball_x += vel_x;
-    wrap_l = vel_x < 0 && ball_x > old_x;   // przy 12 px na klatke pozycja moze sie
-    wrap_r = vel_x > 0 && ball_x < old_x;   // przewinac przez krawedz ekranu
+    wrap_l = vel_x < 0 && ball_x > old_x;   // pozycja przewinela sie przez krawedz ekranu:
+    wrap_r = vel_x > 0 && ball_x < old_x;   // w lewo - pilka za lewa krawedzia, w prawo - cala za prawa
+    if (wrap_l)
+        ball_offl = 1;
     ball_y += vel_y;
     bx = (s16)(ball_x >> 8);
     by = (s16)(ball_y >> 8);
 
     {
-        s16 ft = FIELD_TOP, fb = FIELD_BOTTOM, f;
+        s16 ft = FIELD_TOP, fb = FIELD_BOTTOM, f, cx = ball_offl ? 0 : bx;
         if (luc_w)   // plansza Lucifero: rozszerzona strona gracza - bandy rozchylaja sie ku niemu
         {
-            f = luc_hell_p ? (((256 - bx) * luc_w) >> 8) : ((bx * luc_w) >> 8);
+            f = luc_hell_p ? (((256 - cx) * luc_w) >> 8) : ((cx * luc_w) >> 8);
             ft -= f;
             fb += f;
         }
@@ -7678,9 +7721,11 @@ void update_ball(void)
     bx = (s16)(ball_x >> 8);
     push_history();
     ghost_update(bx);
+    ex = bx - (ball_offl ? 256 : 0) + (wrap_r ? 256 : 0);   // pozycja bez przewiniecia
 
-    // Bloki za paletkami (Waller, FORTRESS): pilka odbija sie zamiast zdobyc punkt
-    if (vel_x > 0 && (bx > 240 || wrap_r) && blocked(1, (s16)(ball_y >> 8)))
+    // Bloki za paletkami (Waller, FORTRESS): pilka odbija sie zamiast zdobyc punkt - tylko w chwili,
+    // gdy dolatuje do linii muru (x 240 albo 8). Pilka, ktora przeleciala przez dziure, leci dalej.
+    if (vel_x > 0 && pex <= 240 && ex > 240 && blocked(1, (s16)(ball_y >> 8)))
     {
         comet = (sp_type == SP_SUPER) || vel_x >= TAIL_SPEED;
         ball_x = FP(240);
@@ -7691,23 +7736,25 @@ void update_ball(void)
         if (comet)
             damage_wall(1, (s16)(ball_y >> 8));
     }
-    else if (vel_x < 0 && (bx < 8 || wrap_l) && blocked(0, (s16)(ball_y >> 8)))
+    else if (vel_x < 0 && pex >= 8 && ex < 8 && blocked(0, (s16)(ball_y >> 8)))
     {
         if ((sp_type == SP_SUPER) || vel_x <= -TAIL_SPEED)
             damage_wall(0, (s16)(ball_y >> 8));
         ball_x = FP(8);
         vel_x = -vel_x;
         wrap_l = 0;
+        ball_offl = 0;
         end_special();
         play_sound(SND_WALL);
     }
     bx = (s16)(ball_x >> 8);
+    ex = bx - (ball_offl ? 256 : 0) + (wrap_r ? 256 : 0);
 
-    // Punkty: za linia paletki albo po przewinieciu pozycji przez krawedz ekranu. Na planszy Lucifero
-    // posadzke widac za paletkami, wiec pilka leci az do jej krawedzi (x 0 i 256).
-    if (vel_x < 0 && (bx < (luc_on ? 1 : 8) || wrap_l))
+    // Punkty: dopiero gdy cala pilka jest za krawedzia boiska (ekranu, x 0-256): po lewej x <= -8,
+    // po prawej x >= 256 (wtedy pozycja przewija sie przez krawedz). Tak samo na planszy Lucifero.
+    if (vel_x < 0 && ex <= -BALL_SIZE)
         lose_point(0);   // punkt: obie pilki znikaja, serwis ze srodka
-    else if (vel_x > 0 && (bx > (luc_on ? 247 : 240) || wrap_r))
+    else if (vel_x > 0 && ex >= 256)
         lose_point(1);
 }
 
@@ -7729,6 +7776,7 @@ void swap_balls(u8 k)
         b = hist_y[i]; hist_y[i] = xh_y[k][i]; xh_y[k][i] = b;
     }
     b = tail_len; tail_len = xtail[k]; xtail[k] = b;
+    b = ball_offl; ball_offl = xb_offl[k]; xb_offl[k] = b;
     b = chron_slowed; chron_slowed = xb_cs[k]; xb_cs[k] = b;   // Chronos i Magneton
     v = chron_saved; chron_saved = xb_csv[k]; xb_csv[k] = v;
     t = pull_total; pull_total = xb_pull[k]; xb_pull[k] = t;
@@ -7742,6 +7790,7 @@ void clear_xballs(void)
     {
         xb_on[k] = 0;
         xtail[k] = 0;
+        xb_offl[k] = 0;
         xb_cs[k] = 0;
         xb_pull[k] = 0;
     }
@@ -7798,21 +7847,25 @@ void xball_abilities(u8 k, s16 bx)
 
 void update_xball(u8 k)
 {
-    s16 bx, by, pbx, pby, ty;
+    s16 bx, by, pbx, pby, ty, pex, ex;
     u8 wl, wr, hh;
 
     if (!xb_on[k])
         return;
+    pex = xb_offl[k] ? 256 : 0;   // (poprzednia pozycja za lewa krawedzia: odejmujemy 256)
     xb_move_asm(k);   // ruch, odbicia od band i historia pozycji (data.asm)
     pbx = xm_pbx;
     pby = xm_pby;
+    pex = pbx - pex;
     wl = (xm_flags >> 1) & 1;
     wr = (xm_flags >> 2) & 1;
+    if (wl)
+        xb_offl[k] = 1;   // przewiniecie w lewo: pilka za lewa krawedzia (jak ball_offl)
     if ((xm_flags & 1) && !sfx_lock)
         play_sound(SND_WALL);
     bx = (s16)(xb_x[k] >> 8);
     if ((xm_flags & 1) && (any_g(9) || ff_mode))   // iskry przy bandzie, jak przy glownej pilce
-        spawn_sparks(bx, (s16)(xb_y[k] >> 8), xb_vy[k] < 0);
+        spawn_sparks(bx - (xb_offl[k] ? 256 : 0), (s16)(xb_y[k] >> 8), xb_vy[k] < 0);
     xball_abilities(k, bx);   // Chronos i Magneton dzialaja na kazda pilke
     // W srodku boiska nie ma z czym sie zderzyc: paletki, mury i linie koncowe sa dalej,
     // wiec kolizje liczymy tylko blisko nich (albo gdy sa bliźniaki lub BLINK STRIKE)
@@ -7866,7 +7919,8 @@ void update_xball(u8 k)
         }
     }
     bx = (s16)(xb_x[k] >> 8);
-    if (xb_vx[k] > 0 && (bx > 240 || wr) && blocked(1, by))
+    ex = bx - (xb_offl[k] ? 256 : 0) + (wr ? 256 : 0);   // pozycja bez przewiniecia
+    if (xb_vx[k] > 0 && pex <= 240 && ex > 240 && blocked(1, by))   // mur: tylko na linii muru
     {
         xb_x[k] = FP(240);
         if (xb_vx[k] >= TAIL_SPEED)
@@ -7874,18 +7928,20 @@ void update_xball(u8 k)
         xb_vx[k] = -xb_vx[k];
         wr = 0;
     }
-    else if (xb_vx[k] < 0 && (bx < 8 || wl) && blocked(0, by))
+    else if (xb_vx[k] < 0 && pex >= 8 && ex < 8 && blocked(0, by))
     {
         if (xb_vx[k] <= -TAIL_SPEED)   // Waller po lewej: szybka pilka kruszy mur
             damage_wall(0, by);
         xb_x[k] = FP(8);
         xb_vx[k] = -xb_vx[k];
         wl = 0;
+        xb_offl[k] = 0;
     }
     bx = (s16)(xb_x[k] >> 8);
-    if (xb_vx[k] < 0 && (bx < (luc_on ? 1 : 8) || wl))   // (plansza Lucifero: do krawedzi posadzki)
+    ex = bx - (xb_offl[k] ? 256 : 0) + (wr ? 256 : 0);
+    if (xb_vx[k] < 0 && ex <= -BALL_SIZE)   // punkt: cala pilka za krawedzia (jak glowna pilka)
         lose_point(0);
-    else if (xb_vx[k] > 0 && (bx > (luc_on ? 247 : 240) || wr))
+    else if (xb_vx[k] > 0 && ex >= 256)
         lose_point(1);
 }
 
@@ -8157,6 +8213,7 @@ void init_state(void)
     score1 = 0;
     score2 = 0;
     ball_x = FP(124);
+    ball_offl = 0;
     ball_y = FP(120);
     vel_x = 0;
     vel_y = 0;
