@@ -18,7 +18,7 @@
     Palety sprite'ow: 0 gracz 1 (+ biala pilka), 1 gracz 2, 2 pilka podczas mocy,
                4 ogon komety (palety 4-7 biora udzial w mieszaniu kolorow)
 
-    Dzwiek: efekty BRR na SPC700, muzyka przez MSU-1 (FXPAK Pro).
+    Dzwiek: efekty BRR i muzyka (moduly .it, sterownik SNESMOD) na SPC700.
 ---------------------------------------------------------------------------------*/
 #include <snes.h>
 #include <string.h>
@@ -63,8 +63,10 @@ void luc_wait_vb(void);
 
 extern char snd_tada, snd_tada_end, snd_tok1, snd_tok1_end, snd_tok2, snd_tok2_end;
 extern char snd_thunder, snd_thunder_end;
+extern char snd_ithud, snd_ithud_end, snd_icrash, snd_icrash_end, snd_ishout, snd_ishout_end, snd_iboom, snd_iboom_end;
 #include "soundbank.h"   // muzyka: numery modulow MOD_... (bank dzwiekow z plikow music/*.it)
-extern char SOUNDBANK__0, SOUNDBANK__1, SOUNDBANK__2, SOUNDBANK__3, SOUNDBANK__4, SOUNDBANK__5;
+#include "intro_music.h"  // TITLE_MUS_POS: muzyka ekranu startowego w module intro
+extern char SOUNDBANK__0, SOUNDBANK__1, SOUNDBANK__2, SOUNDBANK__3, SOUNDBANK__4, SOUNDBANK__5, SOUNDBANK__6;
 extern char rain_til, rain_tilend, rain_map, rain_mapend, bolt_til, bolt_tilend;
 extern char ruden_dust_til, ruden_dust_tilend, ruden_dust_map, ruden_crowd_til, ruden_crowd_tilend, ruden_crowd_map;
 extern char ruden_grad, ruden_gradend, malten_fog_til, malten_fog_tilend, malten_fog_map, malten_grad, malten_gradend;
@@ -129,9 +131,6 @@ enum { PWR_SUPER, PWR_CURVE, PWR_ZIGZAG, PWR_GHOST, PWR_GROW, PWR_SPLIT, PWR_FOR
 #define ICON_LOCK    14   // ikona zablokowanej mocy
 #define ICON_STRIDE  30   // szerokosc mapy ikon: 15 ikon po 2 kafelki
 enum { SP_NONE, SP_SUPER, SP_CURVE, SP_ZIGZAG, SP_GHOST };   // SP_x = PWR_x + 1
-
-// Glosnosc muzyki MSU-1 (0..255). Zmniejsz, jesli muzyka zaglusza efekty.
-#define MUSIC_VOLUME  0xC0
 
 #define FP(px) ((u16)(px) << 8)   // piksel -> format 8.8
 #define REG_CGADD_ (*(vuint8 *)0x2121)   // adres palety (odczyt palety czcionki)
@@ -223,19 +222,14 @@ enum { SP_NONE, SP_SUPER, SP_CURVE, SP_ZIGZAG, SP_GHOST };   // SP_x = PWR_x + 1
 #define SND_ZIGZAG   12
 #define SND_GHOST    13
 #define SND_THUNDER  14   // grzmot (burza w ostatniej walce)
-#define SND_COUNT    15
+#define SND_ITHUD    15   // intro: piesc w biurko
+#define SND_ICRASH   16   // intro: piesc w laptopa
+#define SND_ISHOUT   17   // intro: krzyk
+#define SND_IBOOM    18   // intro: kinowe uderzenie ("Enough!")
+#define SND_COUNT    19
 #define SND_PITCH    6    // 6 * 2000 Hz = 12 kHz, tak jak w plikach WAV
 #define SND_REGION   66   // pamiec SPC na najdluzszy dzwiek: 66 * 256 B
 
-// MSU-1: rejestry pod $2000-$2007
-#define MSU_STATUS   (*(vuint8 *)0x2000)
-#define MSU_TRACK_LO (*(vuint8 *)0x2004)
-#define MSU_TRACK_HI (*(vuint8 *)0x2005)
-#define MSU_VOLUME   (*(vuint8 *)0x2006)
-#define MSU_CONTROL  (*(vuint8 *)0x2007)
-#define MSU_BUSY     0x40
-#define MSU_ERROR    0x08
-#define MSU_PLAY_LOOP 0x03
 
 // Mieszanie kolorow: normalnie polprzezroczyste sprite'y z palet 4-7 (ogon),
 // przez 2 klatki po uderzeniu specjalnym bialy blysk calego ekranu
@@ -245,9 +239,8 @@ enum { SP_NONE, SP_SUPER, SP_CURVE, SP_ZIGZAG, SP_GHOST };   // SP_x = PWR_x + 1
 #define CM_FLASH_ADSUB  0x3F   // dodawanie do wszystkich warstw i tla
 #define CM_FLASH_LEVEL  12     // jasnosc blysku (0..31)
 
-enum { ST_TITLE, ST_SELECT, ST_SERVE, ST_PLAY, ST_PAUSE, ST_OVER, ST_DIALOG, ST_SSELECT, ST_RESULT, ST_THEEND, ST_CHARS, ST_POINTS, ST_NAME, ST_HISCORE, ST_DIFF };
+enum { ST_TITLE, ST_SELECT, ST_SERVE, ST_PLAY, ST_PAUSE, ST_OVER, ST_DIALOG, ST_SSELECT, ST_RESULT, ST_THEEND, ST_CHARS, ST_POINTS, ST_NAME, ST_HISCORE, ST_DIFF, ST_INTRO, ST_CONTROLS };
 enum { AFT_SELECT, AFT_MATCH, AFT_THEEND, AFT_G1 };
-enum { MUS_OFF, MUS_LOADING, MUS_READY, MUS_PLAYING };
 
 // Kolory zmieniane w trakcie gry (indeksy CGRAM i wartosci)
 #define CGI_P1    0
@@ -371,7 +364,7 @@ u16 timer, frame;
 u16 pad0, pad1, pad0_new, pad1_new;
 u16 bgmap[32 * 32];  // mapa BG1 skladana w RAM i kopiowana do VRAM
 brrsamples sounds[SND_COUNT];
-u8 msu_present, music_state, music_want;
+u8 music_want;   // muzyka ma grac (0: przed meczem, w pauzie)
 
 // moce
 u8 power[2], last_power[2];
@@ -472,9 +465,20 @@ u16 luc_carry;   // punkty, ktore Muggy stracil z Kimantero - licza sie dalej w 
 u8 luc_phase;    // scena przemiany: 0 = jeszcze Kimantero (okienka 1-6), 1 = Lucifero
 u16 unlock_mask, result_timer;
 u8 menu_idx, erase_ask;
-u8 luc_test;   // na czas prac: walka z Lucifero wprost z menu tytulowego (STAGE 11: LUCIFERO)
+// Intro po wlaczeniu konsoli. intro_seen: intro obejrzane raz do konca (zapis, bajty 10-11 'I','N');
+// dopiero wtedy START je pomija. Kasowanie zapisu (L+R+SELECT) zeruje te informacje.
+u8 intro_seen;
+u16 intro_t;
 // Tryby QUICK MATCH (game_mode 0) i FAST & FURIOUS (game_mode 1)
-u8 title_sub;      // 1 = podmenu 1 PLAYER / 2 PLAYERS po wybraniu trybu
+u8 title_sub;      // 1 = podmenu 1 PLAYER / 2 PLAYERS po wybraniu trybu, 2 = SETTINGS
+u8 ctl_page;       // CONTROLS: pozycja wyswietlanej strony na liscie widocznych (0..ctl_count-1)
+u8 ctl_back;       // 1 = powrot z CONTROLS: ekran startowy bez restartu muzyki, podmenu SETTINGS
+u8 ctl_count;      // CONTROLS: liczba widocznych stron (tylko odblokowane postacie)
+u8 ctl_list[5];    // CONTROLS: wersje widocznych stron: 0 MUGGY, 1 TELEMENTOR, 2 MAGNETON, 3 KIMANTERO, 4 pozostali
+#define CTL_G_MAGNETON   6
+#define CTL_G_TELEMENTOR 7
+#define CTL_G_KIMANTERO  9
+#define CTL_OTHERS 0x053F   // straznicy bez wlasnych przyciskow: RUDEN..CHRONOS, BLINKER, LUCIFERO
 u8 game_mode, ff_mode, ff_level, pts_idx, pts_players;
 const u8 pts_val[6] = {3, 5, 7, 10, 15, 21};   // do ilu punktow trwa mecz
 #define FF_MAX 0x2000   // FAST & FURIOUS: techniczny limit 32 px na klatke
@@ -644,65 +648,11 @@ char dlg_buf[200], dlg_tmp[200];
 const char name_chars[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.";
 
 //---------------------------------------------------------------------------------
-// MUZYKA (MSU-1)
+// MUZYKA: moduly .it na SPC700 (SNESMOD) - wczytywanie w spc_music_load
 //---------------------------------------------------------------------------------
-u8 msu_detect(void)
-{
-    // MSU-1 przedstawia sie napisem "S-MSU1" pod $2002-$2007
-    const char *sig = "S-MSU1";
-    vuint8 *id = (vuint8 *)0x2002;
-    u8 i;
-    for (i = 0; i < 6; i++)
-    {
-        if (id[i] != sig[i])
-            return 0;
-    }
-    return 1;
-}
-
 void music_off(void)
 {
     music_want = 0;
-    if (msu_present)
-        MSU_CONTROL = 0;
-    music_state = MUS_OFF;
-}
-
-void music_load(u8 track)
-{
-    music_want = 0;
-    if (!msu_present)
-        return;
-    MSU_TRACK_LO = track;   // plik superfamipong-<track>.pcm
-    MSU_TRACK_HI = 0;   // zapis starszego bajtu uruchamia ladowanie (od poczatku utworu)
-    music_state = MUS_LOADING;
-}
-
-// Wywolywane co klatke: nie blokuje gry, gdy karta SD jeszcze laduje utwor
-void music_update(void)
-{
-    if (music_state == MUS_LOADING && !(MSU_STATUS & MSU_BUSY))
-    {
-        if (MSU_STATUS & MSU_ERROR)
-        {
-            music_state = MUS_OFF;   // brak pliku .pcm - gramy bez muzyki
-        }
-        else
-        {
-            MSU_VOLUME = MUSIC_VOLUME;
-            music_state = MUS_READY;
-        }
-    }
-    if (music_state == MUS_READY && music_want)
-    {
-        MSU_CONTROL = MSU_PLAY_LOOP;
-        music_state = MUS_PLAYING;
-    }
-    else if (music_state == MUS_PLAYING && !music_want)
-    {
-        MSU_CONTROL = 0;   // pauza: pozycja w utworze zostaje zapamietana
-        music_state = MUS_READY;
-    }
 }
 
 //---------------------------------------------------------------------------------
@@ -714,8 +664,8 @@ void music_update(void)
 // priorytecie nie przerywa grajacego dzwieku o wyzszym.
 //---------------------------------------------------------------------------------
 #define SND_NONE 0xFF
-const u8 snd_prio[SND_COUNT] = {9, 4, 4, 3, 10, 10, 1, 5, 6, 7, 8, 8, 8, 8, 4};   // grzmot jak odbicie: nie blokuje tokow
-const u8 snd_len[SND_COUNT] = {57, 6, 6, 5, 122, 148, 2, 10, 27, 15, 24, 24, 21, 30};   // w klatkach
+const u8 snd_prio[SND_COUNT] = {9, 4, 4, 3, 10, 10, 1, 5, 6, 7, 8, 8, 8, 8, 4, 11, 12, 12, 13};   // grzmot jak odbicie: nie blokuje tokow
+const u8 snd_len[SND_COUNT] = {57, 6, 6, 5, 122, 148, 2, 10, 27, 15, 24, 24, 21, 30, 0, 25, 43, 68, 132};   // w klatkach
 u8 snd_req, snd_gap, snd_cur_prio, snd_left;
 
 void play_sound(u8 i)
@@ -824,7 +774,11 @@ void init_sound(void)
     spcAllocateSoundRegion(SND_REGION);
     // play_sound(i) czyta wpis i, liczac od OSTATNIO ustawionego wpisu w gore pamieci.
     // Dlatego ustawiamy tablice od konca: sounds[0] na samym koncu.
-    set_sound(SND_THUNDER, 15, 8, &snd_thunder, &snd_thunder_end);   // (kolejnosc malejaca - patrz wyzej)
+    set_sound(SND_IBOOM, 15, 8, &snd_iboom, &snd_iboom_end);   // (kolejnosc malejaca - patrz wyzej)
+    set_sound(SND_ISHOUT, 15, 8, &snd_ishout, &snd_ishout_end);
+    set_sound(SND_ICRASH, 15, 8, &snd_icrash, &snd_icrash_end);
+    set_sound(SND_ITHUD, 15, 8, &snd_ithud, &snd_ithud_end);
+    set_sound(SND_THUNDER, 15, 8, &snd_thunder, &snd_thunder_end);
     set_sound(SND_GHOST, 15, 8, &snd_ghost, &snd_ghost_end);
     set_sound(SND_ZIGZAG, 15, 8, &snd_zigzag, &snd_zigzag_end);
     set_sound(SND_CURVE, 15, 8, &snd_curve, &snd_curve_end);
@@ -1621,6 +1575,26 @@ void spc_music_stop(void)   // bezposrednio: tylko przy zgaszonym ekranie (fade 
     spc_mus = 0;
 }
 
+// Ekran startowy: muzyka z intro (od poczatku, potem w petli czesc z czatu). Tylko przy zgaszonym
+// ekranie. Modul jest wczytywany takze przy wylaczonej muzyce - gra wtedy z glosnoscia 0, zeby
+// wlaczenie w SETTINGS dzialalo od razu (wczytanie modulu wymaga zgaszonego ekranu).
+void title_music(void)
+{
+    spc_music_stop();
+    if (snd_dead)
+        return;
+    digi_active = 0;
+    digi_remain = 0;
+    *(vuint8 *)0x420D = 0;   // (wolny odczyt na czas przesylania - patrz spc_slow_process)
+    spcLoad(MOD_INTRO);
+    storm_fx_ok = 0;
+    *(vuint8 *)0x420D = 1;
+    spcSetModuleVolume(music_on ? MUSIC_VOL : 0);
+    spcPlay(TITLE_MUS_POS);
+    spc_mus = 2;
+    play_wait = 90;   // najwyzej 1.5 s
+}
+
 // W trakcie gry: zatrzymanie przez kolejke dzwieku (nie w chwili przesylania probki efektu)
 void music_stop_safe(void)
 {
@@ -1673,7 +1647,6 @@ void fade(u8 fade_in)
         setBrightness(t);   // jasnosc 0 = ekran wylaczony
         sound_tick();       // dzwiek zaraz po VBlank (patrz snd_process)
         snd_process();
-        music_update();
     }
     // Przed wczytywaniem nowego ekranu dajemy grajacemu efektowi dokonczyc sie (najwyzej
     // 3/4 s): wczytywanie trwa kilka klatek bez obslugi dzwieku i urwany strumien mogl
@@ -2963,7 +2936,16 @@ void draw_menu_labels(void)
     consoleDrawText(12, 18, "              ");
     consoleDrawText(12, 20, "              ");
     consoleDrawText(12, 22, "              ");
-    if (title_sub)   // podmenu po wybraniu QUICK MATCH albo FAST & FURIOUS
+    if (title_sub == 2)   // SETTINGS
+    {
+        if (music_on)
+            consoleDrawText(12, 18, "MUSIC: ON");
+        else
+            consoleDrawText(12, 18, "MUSIC: OFF");
+        consoleDrawText(12, 20, "WATCH INTRO");
+        consoleDrawText(12, 22, "CONTROLS");
+    }
+    else if (title_sub)   // podmenu po wybraniu QUICK MATCH albo FAST & FURIOUS
     {
         consoleDrawText(12, 18, "1 PLAYER");
         consoleDrawText(12, 20, "2 PLAYERS");
@@ -2976,22 +2958,19 @@ void draw_menu_labels(void)
         consoleDrawText(12, 22, "FAST & FURIOUS");
     }
     consoleDrawText(10, 26, "                    ");
-    // wiersz 24: ustawienie muzyki (ten sam wiersz co pytanie o kasowanie zapisu)
+    // wiersz 24: SETTINGS (ten sam wiersz co pytanie o kasowanie zapisu)
     consoleDrawText(5, 24, "                      ");
     if (!title_sub)
-    {
-        if (music_on)
-            consoleDrawText(12, 24, "MUSIC: ON");
-        else
-            consoleDrawText(12, 24, "MUSIC: OFF");
-    }
+        consoleDrawText(12, 24, "SETTINGS");
 }
 
 void draw_menu(void)
 {
     u8 i, n = 5;
-    if (title_sub)
+    if (title_sub == 1)
         n = 2;
+    if (title_sub == 2)
+        n = 3;   // SETTINGS: MUSIC, WATCH INTRO, CONTROLS
     for (i = 0; i < n; i++)
         consoleDrawText(10, 18 + 2 * i, i == menu_idx ? ">" : " ");
 }
@@ -3004,14 +2983,14 @@ const u8 tfl_back[16] = {6, 12, 5, 10, 8, 6, 5, 4, 3, 2, 2, 1, 1, 0, 0, 0};     
 void show_title(u8 first)
 {
     u8 k;
-    luc_test = 0;   // STAGE 11: LUCIFERO dotyczy tylko jednej walki
     if (!first)
         fade(0);
     state = ST_TITLE;
     story = 0;
     demo = 0;
     music_want = 0;
-    spc_music_stop();
+    if (ctl_back == 0)   // powrot z CONTROLS: muzyka ekranu startowego gra dalej
+        title_music();
     reset_effects();
     hide_sprites();
     dmaCopyCGram(&logo_pal, PAL_LOGO * 16, 32);
@@ -3028,6 +3007,12 @@ void show_title(u8 first)
     consoleDrawText(8, 7, "A PADDLE ODYSSEY");
     title_sub = 0;
     menu_idx = 0;
+    if (ctl_back)   // powrot z CONTROLS: podmenu SETTINGS, kursor na CONTROLS
+    {
+        title_sub = 2;
+        menu_idx = 2;
+    }
+    ctl_back = 0;
     draw_menu_labels();
     erase_ask = 0;
     draw_menu();
@@ -3053,6 +3038,11 @@ void title_fx(void)
         n = tfl_back[st];
         c1 = b | (b << 5) | ((b > 27 ? 31 : b + 4) << 10);   // rdzen: biel z odcieniem niebieskim
         c2 = (b >> 1) | ((b >> 1) << 5) | ((b > 21 ? 31 : (b >> 1) + 10) << 10);   // poswiata
+        if (b == 0)   // koniec blysku: piorun znika calkowicie (bez ciemnoniebieskiego sladu)
+        {
+            c1 = 0;
+            c2 = 0;
+        }
         tfl_col[0] = tfl_side ? 0 : c1;
         tfl_col[1] = tfl_side ? 0 : c2;
         tfl_col[2] = tfl_side ? c1 : 0;
@@ -4702,7 +4692,6 @@ void storm_idle(u8 move)
 void setup_match(void)
 {
     u16 *mm = (u16 *)&minicons_map;
-    u16 sn;
     u8 len;
 
     srand(snes_vblank_count);
@@ -4738,12 +4727,7 @@ void setup_match(void)
     court_shown = 1;
 
     clear_text();
-    hud_names2();
-    if (story)
-    {
-        sn = stage + 1;
-        consoleDrawText(14, 3, "%d/10", sn);
-    }
+    hud_names2();   // (bez licznika etapow "x/10" - zbedny, decyzja autora)
     draw_score();
 }
 
@@ -4784,10 +4768,8 @@ void start_match(void)
     storm_check();
     arena_setup();
     music_off();
-    luc_mus_luc = luc_test;   // przemiana przelacza muzyke tylko w module Lucifero
-    if (luc_test)
-        spc_music_load(MOD_LUCIFERO);   // STAGE 11: LUCIFERO - jego muzyka (mgla, w petli)
-    else if (qm_track)
+    luc_mus_luc = 0;   // przemiana przelacza muzyke tylko w module Lucifero (szybki mecz gra wybrany utwor)
+    if (qm_track)
         spc_music_load(story_mod[qm_track - 1]);
     else
         spc_music_load(MOD_TANGO);
@@ -4846,6 +4828,8 @@ void save_write(void)
         chk += save_buf[i];
     save_buf[8] = chk ^ 0x5A;
     save_buf[9] = 0xA0 | (music_on & 1);   // ustawienie MUSIC ON/OFF
+    save_buf[10] = intro_seen ? 'I' : 0;   // intro obejrzane raz do konca
+    save_buf[11] = intro_seen ? 'N' : 0;
     save_buf[16] = 'H';   // tabela najlepszych wynikow: 10 x (9 znakow imienia + wynik)
     save_buf[17] = 'S';
     chk = 0;
@@ -4879,6 +4863,7 @@ void save_read(void)
     music_on = 1;   // domyslnie muzyka wlaczona
     if ((save_buf[9] & 0xFE) == 0xA0)
         music_on = save_buf[9] & 1;
+    intro_seen = (save_buf[10] == 'I' && save_buf[11] == 'N');
     chk = 0;   // tabela najlepszych wynikow (starsze zapisy jej nie maja: pusta tabela)
     for (i = 16; i < 128; i++)
         chk += save_buf[i];
@@ -4903,6 +4888,205 @@ u8 is_locked(u8 pw)
 
 void show_story_select(void);
 void show_the_end(void);
+
+//---------------------------------------------------------------------------------
+// INTRO (po wlaczeniu konsoli)
+// Osobna sekwencja przed ekranem tytulowym: nie idzie przez glowna petle ani vblank_tasks, bo
+// ich znaczniki ustawia dopiero ekran tytulowy (RAM po wlaczeniu konsoli jest przypadkowa).
+// Konczy sie czarnym ekranem; potem show_title(1) startuje gre dokladnie jak dawniej.
+//---------------------------------------------------------------------------------
+// Intro: strumien polecen z intro_data.as (tools/intro/build_intro.py), jedna porcja na klatke.
+// Zapisy grafiki ida zaraz po poczatku VBlank kanalem DMA 7 (biblioteka uzywa kanalu 0).
+// Polecenia: 01 VRAM, 02 CGRAM, 03 rejestr PPU, 04 rejestr PPU dwa razy (przesuniecie warstwy),
+// 05 efekt dzwiekowy, 06 wczytanie muzyki, 07 start muzyki, 08 zatrzymanie muzyki,
+// 09 koniec przygotowania, 0A od teraz mozna pominac, 0B koniec logo (start WATCH INTRO),
+// 10 koniec klatki, FF koniec intro.
+extern u8 intro_cmd;
+u8 *intro_ip;
+u8 intro_skip_ok; // logo producenta minelo: START moze pominac intro (gdy obejrzane)
+u8 intro_mark;    // strumien doszedl do konca logo
+u8 intro_ff;      // przewijanie logo (WATCH INTRO): bez zapisow jasnosci, ekran zostaje wygaszony
+u16 intro_v;     // linia obrazu po zapisach ostatniej klatki (testy)
+u16 intro_v0;    // linia obrazu na poczatku zapisow (testy)
+#define INTRO_VB_LAST 232   // najpozniejsza linia startu zapisow (najdluzsza klatka trwa ok. 25 linii)
+u8 intro_late;   // klatki, w ktorych zapisy nie zmiescily sie w VBlank (sprawdzane w testach)
+
+u8 intro_step(void)
+{
+    u8 op, r;
+    u8 *p = intro_ip;
+    vuint8 *ppu = (vuint8 *)0x2100;
+    while (1)
+    {
+        op = *p++;
+        if (op == 0x10)
+            break;
+        if (op == 0x01)
+        {
+            *(vuint8 *)0x2115 = 0x80;
+            *(vuint8 *)0x2116 = p[0];
+            *(vuint8 *)0x2117 = p[1];
+            *(vuint8 *)0x4370 = 0x01;
+            *(vuint8 *)0x4371 = 0x18;
+            *(vuint8 *)0x4375 = p[2];
+            *(vuint8 *)0x4376 = p[3];
+            *(vuint8 *)0x4372 = p[4];
+            *(vuint8 *)0x4373 = p[5];
+            *(vuint8 *)0x4374 = p[6];
+            *(vuint8 *)0x420B = 0x80;
+            p += 7;
+        }
+        else if (op == 0x02)
+        {
+            *(vuint8 *)0x2121 = p[0];
+            *(vuint8 *)0x4370 = 0x00;
+            *(vuint8 *)0x4371 = 0x22;
+            *(vuint8 *)0x4375 = p[1];
+            *(vuint8 *)0x4376 = p[2];
+            *(vuint8 *)0x4372 = p[3];
+            *(vuint8 *)0x4373 = p[4];
+            *(vuint8 *)0x4374 = p[5];
+            *(vuint8 *)0x420B = 0x80;
+            p += 6;
+        }
+        else if (op == 0x03)
+        {
+            r = p[0];
+            if (r == 0x00)          // jasnosc (pomijana przy przewijaniu logo w WATCH INTRO)
+            {
+                if (intro_ff == 0)
+                {
+                    ppu[0] = p[1];
+                    mirrorINIDISP = p[1];   // kopie rejestrow trzymane przez biblioteke
+                }
+            }
+            else
+            {
+                ppu[r] = p[1];
+                if (r == 0x2C)
+                    videoMode = p[1];
+            }
+            p += 2;
+        }
+        else if (op == 0x04)
+        {
+            r = p[0];
+            ppu[r] = p[1];
+            ppu[r] = p[2];
+            p += 3;
+        }
+        else if (op == 0x05)
+        {
+            play_sound(p[0]);
+            p++;
+        }
+        else if (op == 0x06)
+            spc_music_load(MOD_INTRO);
+        else if (op == 0x07)
+            spc_music_play();
+        else if (op == 0x08)
+            music_stop_safe();
+        else if (op == 0x0A)
+            intro_skip_ok = 1;
+        else if (op == 0x0B)
+            intro_mark = 1;
+        else if (op == 0xFF)
+        {
+            intro_ip = p;
+            return 1;
+        }
+    }
+    intro_ip = p;
+    return 0;
+}
+
+// replay = 1: WATCH INTRO z SETTINGS - bez logo producenta (zaczyna sie od sekundy czerni przed scena 1)
+void run_intro(u8 replay)
+{
+    u16 pn, v;
+    u8 t, done = 0;
+    vuint8 *ppu;
+    state = ST_INTRO;
+    intro_late = 0;
+    intro_skip_ok = 0;
+    intro_mark = 0;
+    intro_ff = 0;
+    intro_ip = &intro_cmd;
+    *(vuint8 *)0x420C = 0;   // bez HDMA
+    REG_NMI = NMI_OFF;       // przygotowanie (duze wgrywanie przy wygaszonym ekranie) bez przerwania VBlank
+    nmi_shadow = NMI_OFF;
+    intro_step();
+    if (replay)   // logo przewijane od razu, przy wygaszonym ekranie (tylko zmiany jasnosci, pomijane)
+    {
+        intro_ff = 1;
+        while (!intro_mark)
+            intro_step();
+        intro_ff = 0;
+    }
+    REG_NMI = NMI_ON;
+    nmi_shadow = NMI_ON;
+    intro_t = 0;
+    while (1)   // (816-tcc: petla for bez warunku zawiesza sie na samej sobie)
+    {
+        intro_t++;
+        (WaitForVBlank)();   // biblioteczne czekanie (bez dodatkow z luc_wait_vb)
+        t = REG_STAT;        // poczatek zapisow: za pozno w VBlank (np. po spoznionej klatce)
+        t = REG_LATCH;       // - czekamy na nastepny, zeby nic nie trafilo w rysowany obraz
+        v = REG_VCOUNT;
+        v |= (REG_VCOUNT & 1) << 8;
+        intro_v0 = v;
+        if (v < 225 || v > INTRO_VB_LAST)
+            (WaitForVBlank)();
+        if (intro_step())
+        {
+            done = 1;
+            break;
+        }
+        t = REG_STAT;    // czy zapisy zmiescily sie w VBlank (linia 225..261)
+        t = REG_LATCH;
+        v = REG_VCOUNT;
+        v |= (REG_VCOUNT & 1) << 8;
+        intro_v = v;
+        if (v < 225)
+            intro_late++;
+        sound_tick();    // dzwiek po zapisach grafiki (patrz snd_process)
+        snd_process();
+        if (intro_seen && intro_skip_ok)  // START pomija intro dopiero, gdy raz obejrzano je do konca (logo zawsze)
+        {
+            pn = padsDown(0) | padsDown(1);
+            if (pn & KEY_START)
+                break;
+        }
+    }
+    // Koniec albo pominiecie: ekran wygaszony, bez muzyki, PPU i pamiec obrazu jak po wlaczeniu,
+    // grafika gry wczytana od nowa (intro zajmowalo cala pamiec obrazu i palete).
+    ppu = (vuint8 *)0x2100;
+    ppu[0] = 0x80;
+    mirrorINIDISP = 0x80;
+    spc_music_stop();   // (przerwanie VBlank zostaje wlaczone, jak przy starcie gry: load_graphics na nie czeka)
+    for (t = 0x05; t <= 0x0C; t++)          // tryb, mapy i adresy kafelkow warstw
+        ppu[t] = 0;
+    for (t = 0x0D; t <= 0x14; t++)          // przesuniecia warstw (zapis podwojny)
+    {
+        ppu[t] = 0;
+        ppu[t] = 0;
+    }
+    for (t = 0x23; t <= 0x2F; t++)          // okna, warstwy ekranu glownego i podekranu
+        ppu[t] = 0;
+    *(vuint8 *)0x2130 = 0x30;
+    *(vuint8 *)0x2131 = 0;
+    dmaClearVram();
+    *(vuint8 *)0x2121 = 0;
+    for (pn = 0; pn < 512; pn++)
+        *(vuint8 *)0x2122 = 0;
+    load_graphics();
+    if (done && !intro_seen)
+    {
+        intro_seen = 1;
+        save_write();
+    }
+    setBrightness(0);
+}
 void story_match(void);
 
 // Tekst dialogu z imieniem gracza: MUGGY -> wpisane imie, a wiersze lamane od nowa do 28 znakow.
@@ -4994,7 +5178,6 @@ void luc_scene_frame(void)   // reszta klatki sceny przemiany (jak w fade)
     vblank_tasks();
     sound_tick();
     snd_process();
-    music_update();
 }
 void luc_morph_prep(u8 n, u8 old)   // kolory awatara: Kimantero -> Lucifero (n = 0..64); old = migniecie starych
 {
@@ -5777,15 +5960,6 @@ void update_difficulty(void)
         play_sound(SND_TOK1);
         if (diff_next == 0)
             show_story_select();
-        else if (luc_test)   // STAGE 11: LUCIFERO - Muggy kontra Lucifero, do 10 punktow
-        {
-            char_of[0] = CH_MUGGY;
-            char_of[1] = CH_G0 + G_LUCIFERO;
-            sel_idx[0] = 0;
-            sel_idx[1] = PWR_HELL;
-            pts_idx = 3;
-            start_match();
-        }
         else
             show_points(0);
     }
@@ -5811,6 +5985,8 @@ u8 char_ok(u8 p, u8 i)
     if (p == 1 && !two_players)   // przeciwnik komputerowy: kazda odblokowana postac (takze AI Agent)
         return 1;
     if (c == CH_SFC)
+        return 0;
+    if (c == CH_JOY)   // JOYBOT to bot: wybiera go tylko komputer, nigdy gracz
         return 0;
     return 1;
 }
@@ -5858,7 +6034,7 @@ void show_chars(u8 players2)
     csel[0] = 0;   // MUGGY
     csel[1] = 2;   // AI AGENT
     if (two_players)
-        csel[1] = 1;   // JOYBOT
+        csel[1] = 0;   // MUGGY (JOYBOT i AI AGENT sa tylko dla komputera)
     cdone[0] = 0;
     cdone[1] = 0;
     cphase = 0;
@@ -6081,6 +6257,193 @@ void update_points(void)
         show_title(0);
 }
 
+// ---------------------------------------------------------------------------
+// CONTROLS (z SETTINGS): opis sterowania w meczu. Osobna wersja dla kazdej postaci (lub grupy
+// postaci) z wlasnymi przyciskami; u gory, ktorych postaci dotyczy. Lewo/prawo: inna wersja,
+// B: powrot do SETTINGS (muzyka ekranu startowego gra dalej). Straznicy (i moc CATCH u Muggy'ego)
+// pojawiaja sie dopiero po odblokowaniu - nic nie zdradza postaci, ktorych gracz jeszcze nie pokonal.
+u8 ctl_unlocked(u8 g)   // straznik g odblokowany (jak na ekranie wyboru postaci)
+{
+    if (char_locked(CH_G0 + g))
+        return 0;
+    return 1;
+}
+
+void ctl_add(u8 v)
+{
+    ctl_list[ctl_count] = v;
+    ctl_count++;
+}
+
+void ctl_pages(void)   // lista widocznych stron
+{
+    ctl_count = 0;
+    ctl_add(0);
+    if (ctl_unlocked(CTL_G_TELEMENTOR))
+        ctl_add(1);
+    if (ctl_unlocked(CTL_G_MAGNETON))
+        ctl_add(2);
+    if (ctl_unlocked(CTL_G_KIMANTERO))
+        ctl_add(3);
+    if ((unlock_mask | TEST_UNLOCK) & CTL_OTHERS)
+        ctl_add(4);
+}
+
+void ctl_names(void)   // strona pozostalych: imiona tylko odblokowanych, wysrodkowane, do 28 znakow w wierszu
+{
+    char line[30];
+    u8 g, k, n, len, row;
+    const char *nm;
+    row = 4;
+    len = 0;
+    for (g = 0; g < NUM_GUARD; g++)
+    {
+        if (((1 << g) & CTL_OTHERS) == 0)
+            continue;
+        if (ctl_unlocked(g) == 0)
+            continue;
+        nm = g_name[g];
+        n = 0;
+        while (nm[n])
+            n++;
+        if (len && len + 2 + n > 28)
+        {
+            line[len] = 0;
+            consoleDrawText((32 - len) >> 1, row, line);
+            row++;
+            len = 0;
+        }
+        if (len)
+        {
+            line[len] = ' ';
+            line[len + 1] = ' ';
+            len += 2;
+        }
+        for (k = 0; k < n; k++)
+        {
+            line[len] = nm[k];
+            len++;
+        }
+    }
+    if (len)
+    {
+        line[len] = 0;
+        consoleDrawText((32 - len) >> 1, row, line);
+    }
+}
+
+void ctl_line(u8 row, char *key, char *txt)
+{
+    consoleDrawText(3, row, key);
+    consoleDrawText(12, row, txt);
+}
+
+void ctl_basic(u8 l_r)   // przyciski wspolne dla wszystkich postaci (wiersze 8-12)
+{
+    ctl_line(8, "UP/DOWN", "MOVE PADDLE");
+    ctl_line(9, "A", "ARM POWER");
+    ctl_line(10, "Y", "DISARM POWER");
+    if (l_r)
+    {
+        ctl_line(11, "L / R", "CHANGE POWER");
+        ctl_line(12, "START", "PAUSE");
+    }
+    else
+        ctl_line(11, "START", "PAUSE");
+}
+
+void ctl_catch(u8 row, char *head)   // moc CATCH: strzal zlapana pilka i celowanie
+{
+    consoleDrawText(3, row, head);
+    ctl_line(row + 1, "A", "SHOOT CAUGHT BALL");
+    ctl_line(row + 2, "UP/DOWN", "AIM THE SHOT");
+}
+
+void draw_controls(void)
+{
+    u8 v;
+    v = ctl_list[ctl_page];
+    clear_text();
+    consoleDrawText(12, 2, "CONTROLS");
+    if (v == 0)
+    {
+        consoleDrawText(13, 4, "MUGGY");
+        ctl_basic(1);
+        consoleDrawText(3, 14, "CURVE POWER:");
+        ctl_line(15, "UP/DOWN", "BEND ARC UP/DOWN");
+        consoleDrawText(12, 16, "(HOLD WHEN FIRING)");
+        if (ctl_unlocked(CTL_G_MAGNETON))   // CATCH to moc Magnetona
+            ctl_catch(18, "CATCH POWER:");
+    }
+    else if (v == 1)
+    {
+        consoleDrawText(11, 4, "TELEMENTOR");
+        ctl_basic(0);
+        ctl_line(13, "X", "TELEPORT UP");
+        ctl_line(14, "B", "TELEPORT DOWN");
+        consoleDrawText(3, 16, "THE PADDLE JUMPS TO WHERE");
+        consoleDrawText(3, 17, "THE INCOMING BALL ARRIVES.");
+        consoleDrawText(3, 18, "ONCE EVERY 3 SECONDS.");
+    }
+    else if (v == 2)
+    {
+        consoleDrawText(12, 4, "MAGNETON");
+        ctl_basic(0);
+        ctl_catch(13, "CATCH POWER:");
+    }
+    else if (v == 3)
+    {
+        consoleDrawText(11, 4, "KIMANTERO");
+        ctl_basic(0);
+        ctl_catch(13, "WHEN CHAOS PICKS CATCH:");
+    }
+    else
+    {
+        ctl_names();
+        ctl_basic(0);
+    }
+    if (ctl_count > 1)
+        consoleDrawText(3, 25, "LEFT/RIGHT: MORE   B: BACK");
+    else
+        consoleDrawText(3, 25, "B: BACK");
+}
+
+void show_controls(void)
+{
+    fade(0);
+    state = ST_CONTROLS;
+    reset_effects();   // (wylacza tez warstwe piorunow z ekranu startowego)
+    hide_sprites();
+    memset(bgmap, 0, sizeof(bgmap));
+    dmaCopyVram((u8 *)bgmap, VRAM_BG1_MAP, sizeof(bgmap));
+    ctl_pages();
+    ctl_page = 0;
+    draw_controls();
+    fade(1);
+}
+
+void update_controls(void)
+{
+    if (ctl_count > 1 && (pad0_new & KEY_RIGHT))
+    {
+        ctl_page = ctl_page < ctl_count - 1 ? ctl_page + 1 : 0;
+        play_sound(SND_TICK);
+        draw_controls();
+    }
+    else if (ctl_count > 1 && (pad0_new & KEY_LEFT))
+    {
+        ctl_page = ctl_page ? ctl_page - 1 : ctl_count - 1;
+        play_sound(SND_TICK);
+        draw_controls();
+    }
+    else if (pad0_new & KEY_B)
+    {
+        play_sound(SND_TICK);
+        ctl_back = 1;
+        show_title(0);
+    }
+}
+
 void update_title(void)
 {
     u16 combo = KEY_L | KEY_R | KEY_SELECT;
@@ -6099,6 +6462,7 @@ void update_title(void)
         {
             unlock_mask = 0;
             story_power = PWR_SUPER;
+            intro_seen = 0;   // po skasowaniu zapisu intro trzeba znow obejrzec do konca
             save_write();
             consoleDrawText(5, 24, "     SAVE ERASED      ");
             erase_ask = 0;
@@ -6118,8 +6482,10 @@ void update_title(void)
         return;
     }
     n = 3;   // ostatnia pozycja menu
-    if (title_sub)
+    if (title_sub == 1)
         n = 1;
+    else if (title_sub == 2)
+        n = 2;   // SETTINGS: MUSIC, WATCH INTRO, CONTROLS
     if (pad0_new & KEY_UP)
     {
         menu_idx = menu_idx ? menu_idx - 1 : n;
@@ -6136,17 +6502,33 @@ void update_title(void)
     }
     if (title_sub && (pad0_new & KEY_B))   // B: powrot do glownego menu
     {
+        menu_idx = (title_sub == 2) ? 3 : game_mode + 1;
         title_sub = 0;
-        menu_idx = game_mode + 1;
         draw_menu_labels();
         draw_menu();
         play_sound(SND_TICK);
         return;
     }
-    if (!title_sub && menu_idx == 3 && (pad0_new & (KEY_START | KEY_A | KEY_LEFT | KEY_RIGHT)))
+    if (title_sub == 2 && menu_idx == 2 && (pad0_new & (KEY_START | KEY_A)))
     {
-        music_on ^= 1;   // MUSIC ON/OFF - zapisywane na karcie
+        play_sound(SND_CONFIRM);   // CONTROLS: opis sterowania
+        show_controls();
+        return;
+    }
+    if (title_sub == 2 && menu_idx == 1 && (pad0_new & (KEY_START | KEY_A)))
+    {
+        play_sound(SND_CONFIRM);   // WATCH INTRO: intro od nowa (bez logo), potem znow ekran startowy
+        fade(0);
+        run_intro(1);
+        show_title(1);
+        return;
+    }
+    if (title_sub == 2 && menu_idx == 0 && (pad0_new & (KEY_START | KEY_A | KEY_LEFT | KEY_RIGHT)))
+    {
+        music_on ^= 1;   // MUSIC ON/OFF - zapisywane na karcie; muzyka ekranu startowego cichnie / wraca od razu
         save_write();
+        if (!snd_dead && spc_mus)
+            pause_cmd = music_on ? 2 : 1;   // (przez kolejke dzwieku, jak pauza w meczu)
         play_sound(SND_CONFIRM);
         draw_menu_labels();
         draw_menu();
@@ -6163,12 +6545,13 @@ void update_title(void)
         }
         else if (menu_idx == 0)
             story_start();
-        else if (menu_idx == 4)   // STAGE 11: LUCIFERO (na czas prac): poziom trudnosci, potem od razu walka
+        else if (menu_idx == 3)
         {
-            luc_test = 1;
-            game_mode = 0;
-            two_players = 0;
-            show_difficulty(1);
+            title_sub = 2;   // SETTINGS
+            menu_idx = 0;
+            draw_menu_labels();
+            draw_menu();
+            play_sound(SND_CONFIRM);
         }
         else
         {
@@ -8238,6 +8621,10 @@ void init_state(void)
     run_cur = 0;
     chaos_last = 0xFF;
     title_sub = 0;
+    ctl_page = 0;
+    ctl_count = 1;
+    ctl_list[0] = 0;
+    ctl_back = 0;   // (RAM po wlaczeniu konsoli nie jest wyzerowana)
     game_mode = 0;
     ff_mode = 0;
     ff_level = 0;
@@ -8278,7 +8665,8 @@ int main(void)
     max_spd = MAX_SPEED;
     arn_rng = 0x5A;
     spcBoot();   // uruchomienie sterownika dzwieku (chwile trwa)
-    spcSetBank(&SOUNDBANK__5);   // bank muzyki zajmuje 6 bankow ROM (z muzyka Lucifero) - od ostatniego
+    spcSetBank(&SOUNDBANK__6);   // bank muzyki zajmuje 7 bankow ROM (z muzyka intro) - od ostatniego
+    spcSetBank(&SOUNDBANK__5);
     spcSetBank(&SOUNDBANK__4);
     spcSetBank(&SOUNDBANK__3);
     spcSetBank(&SOUNDBANK__2);
@@ -8286,8 +8674,6 @@ int main(void)
     spcSetBank(&SOUNDBANK__0);
     load_graphics();
     init_sound();
-    msu_present = msu_detect();
-    music_state = MUS_OFF;
     music_want = 0;
     init_state();
     save_read();   // odblokowane moce z SRAM
@@ -8299,6 +8685,7 @@ int main(void)
     for (i = 0; i < SPR_COUNT; i++)
         oamSetEx(i * 4, OBJ_SMALL, OBJ_SHOW);
 
+    run_intro(0);     // intro (czarny ekran na koncu)
     show_title(1);
 
     while (1)
@@ -8325,6 +8712,10 @@ int main(void)
         {
         case ST_TITLE:
             update_title();
+            break;
+
+        case ST_CONTROLS:
+            update_controls();
             break;
 
         case ST_DIALOG:
@@ -8458,7 +8849,6 @@ int main(void)
         vblank_tasks();
         sound_tick();     // najwyzej jeden nowy dzwiek co 2 klatki
         snd_process();    // przesyla dzwieki do SPC700 (zaraz po VBlank - patrz snd_process)
-        music_update();   // obsluga MSU-1
     }
     return 0;
 }

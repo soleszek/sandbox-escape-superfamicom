@@ -2391,3 +2391,25 @@ luc_cam_hdma_asm:
 luc_camofs:				; krok * 716
 .dw 0, 716, 1432, 2148, 2864, 3580, 4296, 5012, 5728, 6444, 7160, 7876, 8592, 9308, 10024, 10740
 .ends
+
+; Dzwieki intro (tools/make_intro_sfx.py)
+.section ".rodata_sfx_intro1" superfree
+snd_ithud:
+.incbin "ithud.brr"
+snd_ithud_end:
+snd_icrash:
+.incbin "icrash.brr"
+snd_icrash_end:
+snd_ishout:
+.incbin "ishout.brr"
+snd_ishout_end:
+.ends
+
+.section ".rodata_sfx_intro2" superfree
+snd_iboom:
+.incbin "iboom.brr"
+snd_iboom_end:
+.ends
+
+; Intro: strumien polecen i grafika (tools/intro/build_intro.py)
+.include "intro_data.as"

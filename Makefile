@@ -13,12 +13,13 @@ export COUNTRY  := 00
 # FXPAK Pro przechowuje ja na karcie SD jako superfamipong.srm
 export CARTRIDGETYPE := 02
 export SRAMSIZE      := 01
-export ROMSIZE       := 0A    # 1 MB (plansza Lucifero); od banku 8 lezy muzyka
-export ROMBANKS      := 32
+export ROMSIZE       := 0B    # 2 MB (intro); od banku 8 lezy muzyka
+export ROMBANKS      := 64
 
 # Muzyka: moduly .it -> bank dzwiekow (smconv), od banku ROM 8
 AUDIOFILES := music/stormfx.it music/ruden.it music/malten.it music/waller.it music/doppler.it music/changero.it \
-              music/chronos.it music/magneton.it music/telementor.it music/blinker.it music/kimantero.it music/tango.it music/lucifero.it
+              music/chronos.it music/magneton.it music/telementor.it music/blinker.it music/kimantero.it music/tango.it music/lucifero.it \
+              music/intro.it
 export SOUNDBANK := soundbank
 
 # FastROM: kod z bankow $80+, rejestr $420D wlaczany przy starcie (biblioteka LoROM_FastROM)
@@ -84,4 +85,5 @@ bitmaps: court.pic logo.pic \
 #---------------------------------------------------------------------------------
 # Dzwieki: WAV 12 kHz -> BRR (regula %.brr: %.wav jest w snes_rules)
 sounds: tada.brr tok1.brr tok2.brr tokwall.brr fanfare.brr sad.brr \
-        tick.brr confirm.brr ready.brr arm.brr super.brr curve.brr zigzag.brr ghost.brr thunder.brr
+        tick.brr confirm.brr ready.brr arm.brr super.brr curve.brr zigzag.brr ghost.brr thunder.brr \
+        ithud.brr icrash.brr ishout.brr iboom.brr
